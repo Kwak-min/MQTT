@@ -1,0 +1,64 @@
+# --- OS generated files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- Python (Server & ML) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.venv
+venv/
+ENV/
+env/
+.env
+.venv*
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- PlatformIO (Firmware) ---
+.pio/
+.pioenvs/
+.piolibdeps/
+.clangd/
+.gcc-flags.json
+.vscode/
+
+# --- Jupyter Notebook (ML Model) ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# --- Data & Logs ---
+# 실험 데이터와 로그는 깃허브에 올리지 않는 것이 원칙입니다.
+server/logs/*.csv
+server/logs/*.log
+ml_model/data/*.csv
+!ml_model/data/raw_dataset.csv  # 예시 데이터셋은 포함하고 싶다면 !를 붙입니다.
+
+# --- Misc ---
+*.swp
+*.bak
+*.tmp
