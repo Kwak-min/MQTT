@@ -1,4 +1,4 @@
-#include "../include/protocol.h"
+#include "protocol.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
