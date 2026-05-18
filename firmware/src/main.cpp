@@ -3,191 +3,198 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
-// WiFi 설정
 const char *ssid = "YOUR_WIFI_SSID";
 const char *password = "YOUR_WIFI_PASSWORD";
-
-// 게이트웨이 서버 설정
-const char *server_ip = "192.168.0.100"; // 실제 가동 게이트웨이 IP로 할당 필요
+const char *server_ip = "192.168.0.100";
 const uint16_t server_port = 1883;
 
 WiFiUDP udp;
 uint16_t current_msg_id = 1;
 
-// 하드웨어 디바이스 데이터 및 인터페이스 정의 영역 (팀원 A 연동 파트)
+// 하드웨어 데이터 수집 함수 (가상 데이터)
 float read_temperature() {
-  // TODO: [팀원 A] BME280 센서 API 호출 및 실제 온도 반환 구현
-  return 26.5; // 테스트 가상 데이터
-}
+  return 32.5;
+} // 기획서 테스트용 (30도 초과 긴급 상황 가정)
+float read_humidity() { return 45.2; }
+float read_power_consumption() { return 15.4; }
+int8_t get_wifi_rssi() {
+  return -80;
+} // 기획서 테스트용 (-75 미만 불안정 환경 가정)
 
-float read_humidity() {
-  // TODO: [팀원 A] BME280 센서 API 호출 및 실제 습도 반환 구현
-  return 45.2; // 테스트 가상 데이터
-}
-
-float read_power_consumption() {
-  // TODO: [팀원 A] INA226 모듈 API 호출 및 소모 전류(mA) 데이터 수집 구현
-  return 15.4; // 테스트 가상 데이터
-}
-
-int8_t get_wifi_rssi() { return WiFi.RSSI(); }
-
-// 2단계: 복합 제어형 AI 에이전트 추론 연산 루틴 (찬승 담당 파트)
+// 3단계 AI 기반 동적 QoS 자동 선택 알고리즘 (기획서 로직 구현)
 QoSLevel run_complex_agent_inference(float temp, float hum, int8_t rssi,
                                      uint8_t &net_status, uint8_t &urgency) {
-  // 세부 지표 1. 센서 데이터 기반 변동성 및 위험도 판단 (Data Urgency)
-  if (temp > 30.0 || temp < 10.0) {
-    urgency = 1; // 긴급 상태(EMERGENCY) 분류
-  } else {
-    urgency = 0; // 정상 상태(NORMAL) 분류
-  }
+  urgency = (temp > 30.0 || temp < 10.0) ? 1 : 0; // 데이터 위험도 판단
+  net_status = (rssi < -75) ? 1 : 0;              // 네트워크 불안정 판단
 
-  // 세부 지표 2. 선로 통신 가용성 판단 (Network Status)
-  if (rssi < -75) {
-    net_status = 1; // 선로 불안정(UNSTABLE) 분류
+  // 기획서 3단계 조건 매핑
+  if (urgency == 1 && net_status == 1) {
+    return QoSLevel::QoS2; // 최고 신뢰성 모드 (위험 데이터 + 통신 불안정)
+  } else if (urgency == 1 || net_status == 1) {
+    return QoSLevel::QoS1; // 신뢰성 보장 모드 (둘 중 하나만 불안정)
   } else {
-    net_status = 0; // 선로 양호(GOOD) 분류
-  }
-
-  // 세부 지표 3. 다차원 복합 의사결정 매트릭스 도출 (선택지 3 설계 원칙)
-  // 데이터가 긴급하거나 무선 환경이 불안정할 경우 신뢰성 보장을 위해 QoS 1 강제
-  // 지정 데이터가 정상이고 통신 선로가 안정적일 때만 초저전력 구동을 위해 QoS 0
-  // 지정
-  if (urgency == 1 || net_status == 1) {
-    return QoSLevel::QoS1;
-  } else {
-    return QoSLevel::QoS0;
+    return QoSLevel::QoS0; // 최대 저전력 모드 (둘 다 정상)
   }
 }
 
 void setup() {
   Serial.begin(115200);
-
-  // TODO: [팀원 A] BME280 및 INA226 I2C 버스 제어 초기화 선언
-
-  // WiFi 무선 인터페이스 활성화
-  Serial.print("Connecting to WiFi");
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected.");
-
-  // UDP 통신 소켓 바인딩
   udp.begin(server_port);
 
-  // CONNECT 패킷 빌드 및 세션 등록
   ConnectPacket conn_pkt;
-  memset(&conn_pkt, 0, sizeof(conn_pkt));
   conn_pkt.header.length = sizeof(ConnectPacket);
   conn_pkt.header.msg_type = MsgType::CONNECT;
   strncpy(conn_pkt.client_id, "ESP32-Client", sizeof(conn_pkt.client_id) - 1);
-  conn_pkt.sleep_duration = 5; // 5초 주기 스케줄링 세션 동기화
+  conn_pkt.sleep_duration = 5;
 
   udp.beginPacket(server_ip, server_port);
   udp.write((uint8_t *)&conn_pkt, sizeof(conn_pkt));
   udp.endPacket();
-
-  Serial.println("Sent CONNECT packet. Gateway session activated.");
 }
 
-// QoS 1 통신 확인용 PUBACK 핸들러 루틴
-bool wait_for_puback(uint16_t target_msg_id) {
+// 특정 패킷 타입을 타임아웃(2초) 동안 대기하는 범용 수신 핸들러
+bool wait_for_packet(MsgType expected_type, uint16_t target_msg_id) {
   unsigned long start_time = millis();
-  while (millis() - start_time < 2000) { // 교수님 가이드 준수: 2.0초 대기
+  while (millis() - start_time < 2000) { // 2.0초 타임아웃
     int packetSize = udp.parsePacket();
-    if (packetSize >= sizeof(PubAckPacket)) {
-      PubAckPacket ack_pkt;
-      udp.read((char *)&ack_pkt, sizeof(ack_pkt));
+    if (packetSize >= sizeof(Header)) {
+      uint8_t buffer[128];
+      udp.read(buffer, sizeof(buffer));
+      Header *header = (Header *)buffer;
 
-      if (ack_pkt.header.msg_type == MsgType::PUBACK &&
-          ack_pkt.msg_id == target_msg_id) {
-        return true; // 정상 핸드셰이크 성립
+      if (header->msg_type == expected_type) {
+        if (expected_type == MsgType::PUBACK &&
+            ((PubAckPacket *)buffer)->msg_id == target_msg_id)
+          return true;
+        if (expected_type == MsgType::PUBREC &&
+            ((PubRecPacket *)buffer)->msg_id == target_msg_id)
+          return true;
+        if (expected_type == MsgType::PUBCOMP &&
+            ((PubCompPacket *)buffer)->msg_id == target_msg_id)
+          return true;
       }
     }
     delay(10);
   }
-  return false; // 타임아웃 예외 발생
+  return false;
 }
 
 void loop() {
-  // 1단계: 실시간 데이터 정밀 측정
   float temperature = read_temperature();
   float humidity = read_humidity();
   int8_t rssi = get_wifi_rssi();
 
-  // 2단계: 다차원 지능형 에이전트 연산 구동
-  uint8_t net_status = 0;
-  uint8_t data_urgency = 0;
+  uint8_t net_status = 0, data_urgency = 0;
   QoSLevel selected_qos = run_complex_agent_inference(
       temperature, humidity, rssi, net_status, data_urgency);
 
-  // 3단계: 프로토콜 적응형 변환 및 데이터 전송 실행
   PublishPacket pub_pkt;
-  memset(&pub_pkt, 0, sizeof(pub_pkt));
-
   pub_pkt.header.length = sizeof(PublishPacket);
   pub_pkt.header.msg_type = MsgType::PUBLISH;
   pub_pkt.msg_id = current_msg_id++;
   pub_pkt.topic_id = 1;
   pub_pkt.qos = selected_qos;
-
-  // 비트필드 구조 영역에 AI 의사결정 상태 데이터 팩 처리
   pub_pkt.network_status = net_status;
   pub_pkt.data_urgency = data_urgency;
 
-  // 페이로드 정형화 구성 (온습도 및 INA226 기반 측정 전류 통합 구성)
   snprintf(pub_pkt.payload, sizeof(pub_pkt.payload),
            "{\"temp\":%.2f,\"hum\":%.2f,\"power\":%.2f}", temperature, humidity,
            read_power_consumption());
 
-  bool ack_received = false;
   int retry_count = 0;
-  const int max_retries = 3; // 교수님 가이드 준수: 최대 3회 재전송 제한
+  const int max_retries = 3; // 최대 3회 재전송
+  bool transaction_success = false;
 
-  while (retry_count <= max_retries && !ack_received) {
-    Serial.printf("[PUBLISH] MsgID %d 전송 (QoS レ벨: %d, 시도 회수: %d/%d)\n",
-                  pub_pkt.msg_id, (int)pub_pkt.qos, retry_count + 1,
-                  max_retries + 1);
-
+  // --- QoS 레벨별 전송 시퀀스 제어 ---
+  if (selected_qos == QoSLevel::QoS0) {
+    // [QoS 0] 무확인 단발성 전송
     udp.beginPacket(server_ip, server_port);
     udp.write((uint8_t *)&pub_pkt, sizeof(pub_pkt));
     udp.endPacket();
+    transaction_success = true;
+    Serial.println("[QoS 0] 전송 완료 (응답 대기 없음)");
 
-    if (pub_pkt.qos == QoSLevel::QoS1) {
-      if (wait_for_puback(pub_pkt.msg_id)) {
-        Serial.printf("[PUBACK] 수신 성공 - MsgID: %d\n", pub_pkt.msg_id);
-        ack_received = true;
-      } else {
-        Serial.printf(
-            "[TIMEOUT] 응답 미수신 - MsgID: %d 재전송 프로세스 이행\n",
-            pub_pkt.msg_id);
-        retry_count++;
+  } else if (selected_qos == QoSLevel::QoS1) {
+    // [QoS 1] 2단계 핸드셰이크 (PUBLISH -> PUBACK)
+    while (retry_count <= max_retries) {
+      udp.beginPacket(server_ip, server_port);
+      udp.write((uint8_t *)&pub_pkt, sizeof(pub_pkt));
+      udp.endPacket();
+
+      if (wait_for_packet(MsgType::PUBACK, pub_pkt.msg_id)) {
+        transaction_success = true;
+        Serial.printf("[QoS 1] 성공 - PUBACK 수신 (MsgID: %d)\n",
+                      pub_pkt.msg_id);
+        break;
       }
-    } else {
-      break; // QoS 0 상태인 경우 응답 대기 및 재전송 생략 후 즉시 루프 해제
+      retry_count++;
+      Serial.printf("[QoS 1] 타임아웃 - 재전송 시도 (%d/%d)\n", retry_count,
+                    max_retries);
+    }
+
+  } else if (selected_qos == QoSLevel::QoS2) {
+    // [QoS 2] 4단계 핸드셰이크 (PUBLISH -> PUBREC -> PUBREL -> PUBCOMP)
+    bool pubrec_received = false;
+
+    // 단계 1: PUBLISH 송신 및 PUBREC 대기
+    while (retry_count <= max_retries) {
+      udp.beginPacket(server_ip, server_port);
+      udp.write((uint8_t *)&pub_pkt, sizeof(pub_pkt));
+      udp.endPacket();
+
+      if (wait_for_packet(MsgType::PUBREC, pub_pkt.msg_id)) {
+        pubrec_received = true;
+        break;
+      }
+      retry_count++;
+      Serial.printf("[QoS 2] 단계1 타임아웃 - PUBLISH 재전송 (%d/%d)\n",
+                    retry_count, max_retries);
+    }
+
+    // 단계 2: PUBREL 송신 및 PUBCOMP 대기
+    if (pubrec_received) {
+      retry_count = 0;
+      PubRelPacket rel_pkt;
+      rel_pkt.header.length = sizeof(PubRelPacket);
+      rel_pkt.header.msg_type = MsgType::PUBREL;
+      rel_pkt.msg_id = pub_pkt.msg_id;
+
+      while (retry_count <= max_retries) {
+        udp.beginPacket(server_ip, server_port);
+        udp.write((uint8_t *)&rel_pkt, sizeof(rel_pkt));
+        udp.endPacket();
+
+        if (wait_for_packet(MsgType::PUBCOMP, pub_pkt.msg_id)) {
+          transaction_success = true;
+          Serial.printf("[QoS 2] 최종 성공 - PUBCOMP 수신 (MsgID: %d)\n",
+                        pub_pkt.msg_id);
+          break;
+        }
+        retry_count++;
+        Serial.printf("[QoS 2] 단계2 타임아웃 - PUBREL 재전송 (%d/%d)\n",
+                      retry_count, max_retries);
+      }
     }
   }
 
-  if (pub_pkt.qos == QoSLevel::QoS1 && !ack_received) {
-    Serial.printf("[ERROR] 최대 재전송 실패 - MsgID %d 유실 처리됨\n",
-                  pub_pkt.msg_id);
+  if (!transaction_success) {
+    Serial.printf("[통신 에러] QoS %d 전송 최종 실패\n", (int)selected_qos);
   }
 
-  // 4단계: 에너지 세션 동기화 및 초저전력 수면 모드 핸들링
+  // 저전력 수면 동기화 시퀀스 후 절전 모드 진입
   DisconnectPacket disc_pkt;
   disc_pkt.header.length = sizeof(DisconnectPacket);
   disc_pkt.header.msg_type = MsgType::DISCONNECT;
-  disc_pkt.sleep_mode_flag = 1; // Deep Sleep 동기화 마킹
+  disc_pkt.sleep_mode_flag = 1;
 
   udp.beginPacket(server_ip, server_port);
   udp.write((uint8_t *)&disc_pkt, sizeof(disc_pkt));
   udp.endPacket();
-  Serial.println("[SYSTEM] DISCONNECT 통지 완료. 하드웨어 Deep Sleep 진입.");
 
-  // TODO: [팀원 A] 실제 기기 전력 최적화 보존을 위한 하드웨어 Deep Sleep 트리거
-  // 수행 위치 esp_deep_sleep_start();
-
-  delay(5000); // 하드웨어 Sleep 대체용 테스트 딜레이 루틴
+  delay(5000);
 }

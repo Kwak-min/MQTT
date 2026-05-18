@@ -39,7 +39,7 @@ env/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# --- PlatformIO (Firmware) ---
+# --- PlatformIO (Firmware Building & Toolchain) ---
 .pio/
 .pioenvs/
 .piolibdeps/
@@ -47,18 +47,20 @@ pip-delete-this-directory.txt
 .gcc-flags.json
 .vscode/
 
-# --- Jupyter Notebook (ML Model) ---
+# --- Jupyter Notebook (ML Model Development) ---
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 
-# --- Data & Logs ---
-# 실험 데이터와 로그는 깃허브에 올리지 않는 것이 원칙입니다.
+# --- Data & Logs Isolation Policy ---
+# 로컬 실험 원시 데이터와 관제 로깅 파일은 원칙적으로 원격 저장소 노출을 배제함
 server/logs/*.csv
 server/logs/*.log
 ml_model/data/*.csv
-!ml_model/data/raw_dataset.csv  # 예시 데이터셋은 포함하고 싶다면 !를 붙입니다.
 
-# --- Misc ---
+# 학습 연동을 위한 전제 필수 원천 데이터셋(Raw) 예외적 허용 처리
+!ml_model/data/raw_dataset.csv
+
+# --- Temporaries & Backups ---
 *.swp
 *.bak
 *.tmp
