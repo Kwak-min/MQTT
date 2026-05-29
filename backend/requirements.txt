@@ -1,0 +1,14 @@
+# backend/requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+# Production dependencies for the IoT Gateway Backend.
+# Install with:  pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# REST API framework
+flask>=3.0.0
+
+# CORS headers for React/Vue dev server (localhost:3000)
+flask-cors>=4.0.0
+
+# Environment variable loading (.env file support — optional but ready)
+python-dotenv>=1.0.0
