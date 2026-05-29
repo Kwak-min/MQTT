@@ -57,7 +57,7 @@ from app.models.packet              import ConnectPacket, DisconnectPacket, Publ
 
 def main() -> None:
     logger.info("=" * 60)
-    logger.info("  IoT Gateway Backend  —  starting up")
+    logger.info("  IoT Gateway Backend  -  starting up")
     logger.info("=" * 60)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -117,8 +117,8 @@ def main() -> None:
     power_listener.start()
 
     logger.info("[Main] Listeners started.")
-    logger.info("[Main]   → Gingerbread  (Node B)    : UDP %s:%d", UDP_HOST, GINGERBREAD_PORT)
-    logger.info("[Main]   → Power MCU    (ESP32-C3)  : UDP %s:%d", UDP_HOST, POWER_PORT)
+    logger.info("[Main]   -> Gingerbread  (Node B)    : UDP %s:%d", UDP_HOST, GINGERBREAD_PORT)
+    logger.info("[Main]   -> Power MCU    (ESP32-C3)  : UDP %s:%d", UDP_HOST, POWER_PORT)
 
     # ──────────────────────────────────────────────────────────────────────────
     # 4. Flask REST API (데몬 스레드 — 선택 사항, 주석 처리해도 안전함)
@@ -205,7 +205,7 @@ def _start_flask_api(
     )
     api_thread.start()
 
-    logger.info("[Main]   → REST API (Flask)          : http://0.0.0.0:8080/api")
+    logger.info("[Main]   -> REST API (Flask)          : http://0.0.0.0:8080/api")
     logger.info("[Main]     Endpoints:")
     logger.info("[Main]       GET  /api/health")
     logger.info("[Main]       GET  /api/diagnostics")
