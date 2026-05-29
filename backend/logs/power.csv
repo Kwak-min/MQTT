@@ -1,0 +1,2 @@
+timestamp,node,addr_ip,addr_port,current_mA,voltage_V,power_mW
+2026-05-29T18:49:58,A,192.168.1.10,6000,12.5,4.98,62.25

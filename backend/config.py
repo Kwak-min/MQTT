@@ -1,34 +1,34 @@
 """
 backend/config.py
 ─────────────────────────────────────────────────────────────────────────────
-Central configuration file for the IoT Gateway Backend.
-All magic numbers, ports, and file paths live here — import this module
-instead of hard-coding values anywhere else.
+IoT 게이트웨이 백엔드를 위한 중앙 설정(Configuration) 파일입니다.
+모든 매직 넘버, 포트 및 파일 경로는 여기에 위치합니다 — 다른 곳에
+값을 하드코딩하는 대신 이 모듈을 임포트하여 사용하세요.
 ─────────────────────────────────────────────────────────────────────────────
 """
 
 import os
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Network
+# 네트워크 (Network)
 # ──────────────────────────────────────────────────────────────────────────────
 
-UDP_HOST = "0.0.0.0"               # Listen on all available interfaces
+UDP_HOST = "0.0.0.0"               # 사용 가능한 모든 인터페이스에서 수신 대기
 
-# Node B  ──  Gingerbread (Low-Power Custom UDP Protocol)
+# Node B  ──  Gingerbread (저전력 맞춤형 UDP 프로토콜)
 GINGERBREAD_PORT = 5000
 
-# ESP32-C3 Power MCU  ──  JSON power streaming (current, voltage, power)
+# ESP32-C3 전력 MCU  ──  JSON 전력 스트리밍 (전류, 전압, 전력)
 POWER_PORT = 6000
 
-# UDP receive buffer size (bytes)
+# UDP 수신 버퍼 크기 (바이트)
 UDP_BUFFER_SIZE = 1024
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Logging / Persistence
+# 로깅 / 영구 저장 (Logging / Persistence)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Resolve paths relative to this config file so the backend works from any cwd
+# 백엔드가 어떤 작업 디렉토리에서도 작동하도록 이 설정 파일을 기준으로 경로를 확인합니다.
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 LOG_DIR           = os.path.join(_BASE_DIR, "logs")
@@ -40,25 +40,25 @@ SESSION_LOG_CSV   = os.path.join(LOG_DIR, "sessions.csv")
 # QoS
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Seconds to hold a QoS 2 in-flight record before expiring it
+# 진행 중인 QoS 2 레코드를 만료시키기 전까지 유지할 초 단위 시간
 QOS2_TIMEOUT_SECONDS = 30
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Gingerbread Protocol — Message Type Constants
-# (Must match firmware definitions in Node B ESP32-S3)
+# Gingerbread 프로토콜 — 메시지 유형 상수
+# (Node B ESP32-S3의 펌웨어 정의와 일치해야 함)
 # ──────────────────────────────────────────────────────────────────────────────
 
 MSG_CONNECT    = 1
 MSG_PUBLISH    = 2
-MSG_PUBACK     = 3   # QoS 1 acknowledgement  (server → client)
+MSG_PUBACK     = 3   # QoS 1 확인(acknowledgement) (서버 → 클라이언트)
 MSG_DISCONNECT = 4
-MSG_PUBREC     = 5   # QoS 2 step 1  (server → client: "received")
-MSG_PUBREL     = 6   # QoS 2 step 2  (client → server: "release")
-MSG_PUBCOMP    = 7   # QoS 2 step 3  (server → client: "complete")
+MSG_PUBREC     = 5   # QoS 2 단계 1 (서버 → 클라이언트: "수신됨(received)")
+MSG_PUBREL     = 6   # QoS 2 단계 2 (클라이언트 → 서버: "해제(release)")
+MSG_PUBCOMP    = 7   # QoS 2 단계 3 (서버 → 클라이언트: "완료(complete)")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Packet Format Constants
+# 패킷 포맷 상수
 # ──────────────────────────────────────────────────────────────────────────────
 
-CONNECT_MIN_LEN  = 18   # 2-byte header + 16-byte client_id
-PUBLISH_MIN_LEN  = 7    # 2-byte header + 2-byte msg_id + 1-byte qos + 2-byte topic_id
+CONNECT_MIN_LEN  = 18   # 2바이트 헤더 + 16바이트 client_id
+PUBLISH_MIN_LEN  = 7    # 2바이트 헤더 + 2바이트 msg_id + 1바이트 qos + 2바이트 topic_id

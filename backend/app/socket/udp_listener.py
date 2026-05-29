@@ -1,30 +1,30 @@
 """
 backend/app/socket/udp_listener.py
 ─────────────────────────────────────────────────────────────────────────────
-Background UDP Socket Listener.
+백그라운드 UDP 소켓 리스너입니다.
 
-Each UDPListener instance binds a single UDP socket on a designated port
-and spins a daemon thread that continuously calls recvfrom().
+각 UDPListener 인스턴스는 지정된 포트에 단일 UDP 소켓을 바인딩하고
+recvfrom()을 지속적으로 호출하는 데몬 스레드를 실행합니다.
 
-Two instances are created in main.py:
-  • GingerbreadListener  — port 5000, Node B packets (binary Gingerbread)
-  • PowerListener        — port 6000, ESP32-C3 JSON power streaming
+main.py에서 두 개의 인스턴스가 생성됩니다:
+  • GingerbreadListener  — 포트 5000, Node B 패킷 (바이너리 Gingerbread)
+  • PowerListener        — 포트 6000, ESP32-C3 JSON 전력 스트리밍
 
-Dependency wiring (injected by main.py, NOT imported here):
+의존성 주입 (main.py에서 주입되며, 여기서 임포트되지 않음):
   ┌────────────────────────────────────────────────────────────┐
   │  UDPListener                                               │
-  │    ↓ raw bytes                                             │
-  │  packet_parser  →  typed Packet (with arrival timestamp)   │
+  │    ↓ 원시 바이트(raw bytes)                                  │
+  │  packet_parser  →  타입이 지정된 Packet (도착 타임스탬프 포함) │
   │    ↓                                                       │
-  │  QoSHandler (Gingerbread only)  or  direct dispatch        │
-  │    ↓ confirmed PublishPacket / PowerPacket                 │
+  │  QoSHandler (Gingerbread 전용)  또는  직접 디스패치           │
+  │    ↓ 확인된 PublishPacket / PowerPacket                       │
   │  SessionService  +  TelemetryService                       │
   └────────────────────────────────────────────────────────────┘
 
-Metrics exposed per listener:
-  .recv_count   — total datagrams received since start()
-  .error_count  — total dispatch/parse errors since start()
-  .is_alive     — True while the listener thread is running
+각 리스너에 노출되는 메트릭:
+  .recv_count   — start() 이후 수신된 총 데이터그램 수
+  .error_count  — start() 이후 총 디스패치/파싱 에러 수
+  .is_alive     — 리스너 스레드가 실행 중인 동안 True
 ─────────────────────────────────────────────────────────────────────────────
 """
 
@@ -50,20 +50,20 @@ logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Base listener
+# 기본 리스너
 # ──────────────────────────────────────────────────────────────────────────────
 
 class UDPListener:
     """
-    Generic UDP listener that runs on a daemon thread.
+    데몬 스레드에서 실행되는 일반 UDP 리스너입니다.
 
-    Subclass and override _dispatch() to handle decoded packets.
+    수신된 패킷을 처리하려면 하위 클래스를 만들고 _dispatch()를 오버라이드하세요.
 
-    Metrics
+    메트릭(Metrics)
     -------
-    recv_count   : int — total datagrams successfully passed to _dispatch()
-    error_count  : int — total datagrams that raised an exception in _dispatch()
-    is_alive     : bool — True while the listener thread is running
+    recv_count   : int — _dispatch()에 성공적으로 전달된 총 데이터그램 수
+    error_count  : int — _dispatch()에서 예외를 발생시킨 총 데이터그램 수
+    is_alive     : bool — 리스너 스레드가 실행 중인 동안 True
     """
 
     def __init__(self, host: str, port: int, name: str) -> None:
@@ -73,24 +73,24 @@ class UDPListener:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-        # ── Metrics ──────────────────────────────────────────────────────────
+        # ── 메트릭 ──────────────────────────────────────────────────────────
         self._recv_count:  int = 0
         self._error_count: int = 0
         self._metrics_lock = threading.Lock()
 
-        # ── Socket ───────────────────────────────────────────────────────────
+        # ── 소켓 ───────────────────────────────────────────────────────────
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self._host, self._port))
-        # Allow blocking recvfrom() to respect stop_event by timing out regularly
+        # 차단(blocking)되는 recvfrom()이 정기적으로 시간 초과되도록 하여 stop_event를 존중하도록 허용합니다.
         self._sock.settimeout(1.0)
 
         logger.info("[%s] Bound to UDP %s:%d", self._name, self._host, self._port)
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # ── 수명 주기(Lifecycle) ─────────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Spawn the daemon listener thread."""
+        """데몬 리스너 스레드를 생성합니다."""
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run_loop,
@@ -101,7 +101,7 @@ class UDPListener:
         logger.info("[%s] Listener thread started.", self._name)
 
     def stop(self) -> None:
-        """Signal the listener loop to exit and close the socket."""
+        """리스너 루프에 종료 신호를 보내고 소켓을 닫습니다."""
         self._stop_event.set()
         try:
             self._sock.close()
@@ -111,27 +111,27 @@ class UDPListener:
             self._thread.join(timeout=3)
         logger.info("[%s] Listener stopped.", self._name)
 
-    # ── Metrics properties ────────────────────────────────────────────────────
+    # ── 메트릭 속성(Metrics properties) ────────────────────────────────────────────────────
 
     @property
     def recv_count(self) -> int:
-        """Total datagrams dispatched since start()."""
+        """start() 이후 디스패치된 총 데이터그램 수입니다."""
         with self._metrics_lock:
             return self._recv_count
 
     @property
     def error_count(self) -> int:
-        """Total dispatch errors since start()."""
+        """start() 이후 총 디스패치 에러 수입니다."""
         with self._metrics_lock:
             return self._error_count
 
     @property
     def is_alive(self) -> bool:
-        """True while the listener thread is running."""
+        """리스너 스레드가 실행 중인 동안 True를 반환합니다."""
         return self._thread is not None and self._thread.is_alive()
 
     def get_metrics(self) -> dict:
-        """Return a metrics snapshot as a plain dict."""
+        """메트릭 스냅샷을 일반 딕셔너리로 반환합니다."""
         with self._metrics_lock:
             return {
                 "name":        self._name,
@@ -142,17 +142,17 @@ class UDPListener:
                 "error_count": self._error_count,
             }
 
-    # ── Internal loop ─────────────────────────────────────────────────────────
+    # ── 내부 루프(Internal loop) ─────────────────────────────────────────────────────────
 
     def _run_loop(self) -> None:
-        """Blocking receive loop — runs on the daemon thread."""
+        """차단(blocking) 수신 루프 — 데몬 스레드에서 실행됩니다."""
         while not self._stop_event.is_set():
             try:
                 raw, addr = self._sock.recvfrom(UDP_BUFFER_SIZE)
             except socket.timeout:
                 continue
             except OSError:
-                # Socket was closed by stop()
+                # stop()에 의해 소켓이 닫혔습니다
                 break
             except Exception as exc:
                 logger.exception("[%s] Unexpected recv error: %s", self._name, exc)
@@ -170,19 +170,19 @@ class UDPListener:
                 )
 
     def _dispatch(self, raw: bytes, addr) -> None:
-        """Override in subclasses to process a received datagram."""
+        """수신된 데이터그램을 처리하려면 하위 클래스에서 오버라이드하세요."""
         raise NotImplementedError
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Gingerbread Listener  (Node B, port 5000)
+# Gingerbread 리스너  (Node B, 포트 5000)
 # ──────────────────────────────────────────────────────────────────────────────
 
 class GingerbreadListener(UDPListener):
     """
-    Listens on port 5000 for Node B (ESP32-S3) Gingerbread UDP packets.
+    Node B (ESP32-S3) Gingerbread UDP 패킷을 위해 포트 5000에서 수신 대기합니다.
 
-    Injects all dependencies through the constructor.
+    생성자를 통해 모든 의존성을 주입합니다.
     """
 
     def __init__(
@@ -197,17 +197,17 @@ class GingerbreadListener(UDPListener):
         self._on_connect    = on_connect
         self._on_disconnect = on_disconnect
 
-        # QoSHandler is created here so it owns the same socket reference
-        # needed to send PUBACK/PUBREC/PUBCOMP back to the client.
+        # QoSHandler는 클라이언트에 PUBACK/PUBREC/PUBCOMP를 다시 보내는 데
+        # 필요한 동일한 소켓 참조를 소유하도록 여기서 생성됩니다.
         self._qos_handler = QoSHandler(sock=self._sock, on_deliver=on_deliver)
 
     @property
     def qos_handler(self) -> QoSHandler:
-        """Expose the QoSHandler for diagnostics / testing."""
+        """진단 / 테스트를 위해 QoSHandler를 노출합니다."""
         return self._qos_handler
 
     def _dispatch(self, raw: bytes, addr) -> None:
-        """Parse raw bytes and route to session or QoS handler."""
+        """원시 바이트를 파싱하고 세션 또는 QoS 핸들러로 라우팅합니다."""
         packet = parse_gingerbread_packet(raw, addr)
 
         if isinstance(packet, ConnectPacket):
@@ -238,12 +238,12 @@ class GingerbreadListener(UDPListener):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Power MCU Listener  (ESP32-C3, port 6000)
+# 전력 MCU 리스너  (ESP32-C3, 포트 6000)
 # ──────────────────────────────────────────────────────────────────────────────
 
 class PowerListener(UDPListener):
     """
-    Listens on port 6000 for ESP32-C3 Power MCU JSON power streaming packets.
+    ESP32-C3 전력 MCU JSON 전력 스트리밍 패킷을 위해 포트 6000에서 수신 대기합니다.
     """
 
     def __init__(

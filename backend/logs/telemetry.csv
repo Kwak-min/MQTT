@@ -1,0 +1,3 @@
+timestamp,client_id,msg_id,qos,topic_id,addr_ip,addr_port,temp,hum,gas,gas_valid,power,raw_payload
+2026-05-29T18:49:58,nodeB_test,7,1,1,192.168.1.42,5000,25.3,61.0,98000.0,True,,"{""temp"":25.3,""hum"":61.0,""gas"":98000.0}"
+2026-05-29T18:49:58,nodeB_test,8,1,1,192.168.1.42,5000,26.1,62.0,,False,,"{""temp"":26.1,""hum"":62.0}"

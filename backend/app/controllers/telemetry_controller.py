@@ -9,10 +9,18 @@ HTTP adapter and must NOT directly touch CSV files or sockets.
 Endpoints
 ─────────
   GET /api/telemetry/env?limit=50&client_id=<id>
-      Last N environmental telemetry rows.
+      Last N environmental telemetry rows (CSV-backed, paginated).
 
   GET /api/telemetry/power?limit=100&node=A
-      Last N power telemetry rows (optionally filtered by node).
+      Last N power telemetry rows (CSV-backed, paginated).
+
+  GET /api/telemetry/latest/env
+      Single latest environmental reading from in-memory snapshot.
+      Always returns all BME680 fields (gas, gas_valid, etc.) with
+      0.0 defaults even before the first packet arrives.
+
+  GET /api/telemetry/latest/power?node=A
+      Latest power reading(s) from in-memory snapshot (no disk I/O).
 
   GET /api/telemetry/stream
       Server-Sent Events — pushed in real-time whenever env data arrives.
@@ -110,6 +118,63 @@ def create_blueprint(
         node  = request.args.get("node", None)
         rows  = telemetry_svc.get_recent_power(limit=limit, node=node)
         return jsonify({"count": len(rows), "data": rows})
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # GET /api/telemetry/latest/env   — instant in-memory read
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @bp.route("/telemetry/latest/env", methods=["GET"])
+    def get_latest_env():
+        """
+        Return the latest environmental reading from the in-memory snapshot.
+
+        This endpoint reads self.telemetry_data directly — no CSV I/O.
+        All BME680 fields (temp, hum, gas, gas_valid, power) are always
+        present, defaulting to 0.0 / False before the first packet arrives.
+
+        Response shape:
+          {
+            "timestamp": "2026-05-29T17:00:00",
+            "client_id": "nodeB_001",
+            "temp": 24.5,
+            "hum":  61.2,
+            "gas":  124500.0,
+            "gas_valid": true,
+            "power": null,
+            "packet_count": 42
+          }
+        """
+        snapshot = telemetry_svc.get_latest_env()
+        return jsonify(snapshot)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # GET /api/telemetry/latest/power?node=A  — instant in-memory read
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @bp.route("/telemetry/latest/power", methods=["GET"])
+    def get_latest_power():
+        """
+        Return the latest power reading(s) from the in-memory snapshot.
+
+        This endpoint reads self.power_data directly — no CSV I/O.
+        Both nodes (A and B) default to 0.0 before any packets arrive.
+
+        Query parameters:
+          node (str, optional) : "A" or "B" — return that node only.
+                                 Omit to return both nodes.
+
+        Response shape (no node filter):
+          {
+            "A": { "current_mA": 12.5, "voltage_V": 4.98, ... },
+            "B": { "current_mA": 8.1,  "voltage_V": 4.97, ... }
+          }
+
+        Response shape (node=A):
+          { "node": "A", "current_mA": 12.5, "voltage_V": 4.98, ... }
+        """
+        node     = request.args.get("node", None)
+        snapshot = telemetry_svc.get_latest_power(node=node)
+        return jsonify(snapshot)
 
     # ──────────────────────────────────────────────────────────────────────────
     # GET /api/telemetry/stream  — Server-Sent Events
