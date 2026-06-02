@@ -51,6 +51,8 @@ from config import UDP_HOST, GINGERBREAD_PORT, POWER_PORT
 
 from app.services.session_service   import SessionService
 from app.services.telemetry_service import TelemetryService
+# ConfigService: config.json 동적 재로더 + MQTT 게이트웨이 동기화 서비스
+from app.services.config_service    import ConfigService
 from app.socket.udp_listener        import GingerbreadListener, PowerListener
 from app.models.packet              import ConnectPacket, DisconnectPacket, PublishPacket, PowerPacket
 
@@ -65,6 +67,9 @@ def main() -> None:
     # ──────────────────────────────────────────────────────────────────────────
     session_svc   = SessionService()
     telemetry_svc = TelemetryService()
+    # ConfigService 초기화 — config.json 로드 및 MQTT 브로커 연결 시도
+    # MQTT 브로커가 없어도 서버는 정상 동작합니다 (설정 파일 읽기/쓰기는 유지됨)
+    config_svc    = ConfigService()
     logger.info("[Main] Services initialised.")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -126,6 +131,7 @@ def main() -> None:
     _start_flask_api(
         session_svc=session_svc,
         telemetry_svc=telemetry_svc,
+        config_svc=config_svc,
         gingerbread_listener=gingerbread_listener,
         power_listener=power_listener,
     )
@@ -142,12 +148,15 @@ def main() -> None:
     finally:
         gingerbread_listener.stop()
         power_listener.stop()
+        # ConfigService 종료 — MQTT 클라이언트 연결을 안전하게 닫습니다
+        config_svc.shutdown()
         logger.info("[Main] All listeners stopped. Goodbye.")
 
 
 def _start_flask_api(
     session_svc,
     telemetry_svc,
+    config_svc=None,
     gingerbread_listener=None,
     power_listener=None,
 ) -> None:
@@ -169,6 +178,8 @@ def _start_flask_api(
         from flask_cors import CORS
         from app.controllers.telemetry_controller import create_blueprint as create_telemetry_bp
         from app.controllers.session_controller   import create_blueprint as create_session_bp
+        # 설정 동기화 컨트롤러 임포트 (GET/POST /api/config 엔드포인트)
+        from app.controllers.config_controller    import create_blueprint as create_config_bp
     except ImportError as exc:
         logger.warning(
             "[Main] Flask dependency missing — REST API disabled. "
@@ -191,6 +202,14 @@ def _start_flask_api(
     # 세션 블루프린트 등록 (/api/sessions/*)
     session_bp = create_session_bp(session_svc=session_svc)
     flask_app.register_blueprint(session_bp, url_prefix="/api")
+
+    # 설정 블루프린트 등록 (/api/config, /api/config/reload)
+    # config_svc가 None인 경우(초기화 실패)에도 서버는 계속 동작합니다.
+    if config_svc is not None:
+        config_bp = create_config_bp(config_svc=config_svc)
+        flask_app.register_blueprint(config_bp, url_prefix="/api")
+    else:
+        logger.warning("[Main] ConfigService가 없어 설정 API 엔드포인트가 비활성화됩니다.")
 
     api_thread = threading.Thread(
         target=lambda: flask_app.run(
@@ -217,6 +236,9 @@ def _start_flask_api(
     logger.info("[Main]       GET  /api/sessions")
     logger.info("[Main]       GET  /api/sessions/stats")
     logger.info("[Main]       GET  /api/sessions/<client_id>")
+    logger.info("[Main]       GET  /api/config                  (현재 설정 조회)")
+    logger.info("[Main]       POST /api/config                  (설정 갱신 → MQTT 푸시)")
+    logger.info("[Main]       POST /api/config/reload           (config.json 강제 재로드)")
 
 
 if __name__ == "__main__":
