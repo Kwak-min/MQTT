@@ -279,6 +279,7 @@ void setup() {
    * Wire.begin(SDA, SCL)로 ESP32-S3의 기본 I2C 핀을 GPIO 8/9로 재정의합니다.
    * 두 INA219는 동일한 I2C 버스를 서로 다른 주소(0x40, 0x41)로 공유합니다. */
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setTimeOut(50); // I2C 버스 록업 방지 및 통신 안정성 확보
   Serial.printf("[부팅] ✓ I2C 버스 초기화 완료 (SDA=GPIO%d, SCL=GPIO%d)\n",
                 I2C_SDA_PIN, I2C_SCL_PIN);
 

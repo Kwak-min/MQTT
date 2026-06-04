@@ -60,8 +60,8 @@
  * UDP_SERVER_IP  / UDP_SERVER_PORT  → 커스텀 MQTT-SN 게이트웨이 (라즈베리파이 5)
  * MQTT_BROKER_IP / MQTT_BROKER_PORT → 표준 MQTT 브로커 Mosquitto (동일 라즈베리파이)
  * ═══════════════════════════════════════════════════════════════════════════ */
-static const char    *WIFI_SSID         = "YOUR_WIFI_SSID";     // Wi-Fi 네트워크 SSID
-static const char    *WIFI_PASSWORD     = "YOUR_WIFI_PASSWORD";  // Wi-Fi 비밀번호
+static const char    *WIFI_SSID        = "YOUR_WIFI_SSID";     // Wi-Fi 네트워크 SSID
+static const char    *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD";  // Wi-Fi 비밀번호
 
 /* 커스텀 MQTT-SN (UDP) 게이트웨이 주소 및 포트
  * 라즈베리파이 5에서 실행 중인 Python 게이트웨이 서버의 수신 엔드포인트 */
@@ -684,7 +684,8 @@ void setup() {
   /* 3단계: BME680 I2C 센서 초기화
    * 기본 I2C 버스(SDA=GPIO 8, SCL=GPIO 9)에 0x77 주소로 연결된 센서를 초기화합니다.
    * 연결되지 않은 경우 시뮬레이션 값으로 폴백합니다. */
-  Wire.begin(); // 기본 I2C 버스 초기화 (SDA=8, SCL=9 on ESP32-S3)
+  Wire.begin(8, 9); // 기본 I2C 버스 초기화 (SDA=8, SCL=9 on ESP32-S3)
+  Wire.setTimeOut(50); // I2C 버스 록업 방지 및 통신 안정성 확보
   if (bme.begin(BME680_I2C_ADDR, &Wire)) {
     /* BME680 측정 설정: 온도, 습도, 기압, 가스 저항 모두 활성화 */
     bme.setTemperatureOversampling(BME680_OS_8X);   // 온도 오버샘플링 8배

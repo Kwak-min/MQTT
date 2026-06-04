@@ -56,8 +56,8 @@
  * UDP_SERVER_IP  / UDP_SERVER_PORT  → 커스텀 MQTT-SN 게이트웨이 (라즈베리파이 5)
  * MQTT_BROKER_IP / MQTT_BROKER_PORT → 표준 MQTT 브로커 Mosquitto (동일 라즈베리파이)
  * ═══════════════════════════════════════════════════════════════════════════ */
-static const char    *WIFI_SSID         = "YOUR_WIFI_SSID";    // Wi-Fi 네트워크 SSID
-static const char    *WIFI_PASSWORD     = "YOUR_WIFI_PASSWORD"; // Wi-Fi 비밀번호
+static const char    *WIFI_SSID        = "YOUR_WIFI_SSID";     // Wi-Fi 네트워크 SSID
+static const char    *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD"; // Wi-Fi 비밀번호
 
 // 커스텀 MQTT-SN (UDP) 게이트웨이 주소 및 포트
 // 라즈베리파이 5에서 실행 중인 Python 게이트웨이 서버의 수신 엔드포인트

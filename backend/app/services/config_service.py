@@ -127,7 +127,7 @@ class ConfigService:
 
         # 설정 데이터 캐시 및 보호 락
         self._config: Dict[str, Any] = {}
-        self._lock: threading.RLock = threading.RLock()
+        self._lock: threading.Lock = threading.Lock()
 
         # MQTT 브로커 연결 설정 값 저장
         self._mqtt_host = mqtt_host
