@@ -53,7 +53,8 @@ import threading
 import time
 from typing import Dict, List, Optional
 
-from app.models.packet import PowerPacket, PublishPacket
+from app.models.packet import PowerPacket, PublishPacket, EstimatedPowerPacket
+from app.services.power_estimator import estimate_energy
 from config import LOG_DIR, POWER_CSV, TELEMETRY_CSV
 
 logger = logging.getLogger(__name__)
@@ -133,9 +134,18 @@ class TelemetryService:
         "raw_payload",
     ]
 
+    # [2026-06 리팩토링] 전력 CSV 필드 스키마 교체
+    # 하드웨어 INA219 측정값 → IEEE Access 2024 소프트웨어 추정값
     _POWER_FIELDS: List[str] = [
-        "timestamp", "node", "addr_ip", "addr_port",
-        "current_mA", "voltage_V", "power_mW",
+        "timestamp",
+        "client_id",          # ESP32 클라이언트 ID
+        "qos",                # QoS 레벨 (0, 1, 2)
+        "rtt_ms",             # PUBLISH~ACK 왕복 시간 (ms)
+        "retry_count",        # 재전송 횟수
+        "sleep_mode_ratio",   # Sleep 비율 (0.0~1.0)
+        "estimated_energy_mwh",  # IEEE Access 2024 추정 에너지 (mWh)
+        "packet_count",       # 디바이스 누적 패킷 수
+        "total_bytes",        # 디바이스 누적 전송 바이트 수
     ]
 
     # ── BME680 가스 저항 물리적 유효 범위 (Ohm 단위) ─────────────────────────
@@ -266,6 +276,11 @@ class TelemetryService:
         # ── 3단계: SSE 팬아웃 (락 외부에서 비차단 처리) ─────────────────────
         self._fanout_env(row)
 
+        # ── 4단계: [2026-06] SW 전력 추정 ───────────────────────────────────
+        # PublishPacket 페이로드에서 라이브 메트릭을 추출하여
+        # IEEE Access 2024 경험적 공식으로 전력을 실시간 추정합니다.
+        self._estimate_and_record_power(packet, client_id or "unknown")
+
         # ── 구조화 로그 출력 ──────────────────────────────────────────────────
         # gas 값을 kΩ 단위로 변환하고 유효성 태그([OK]/[INVALID])를 부여합니다
         if sensor["gas"] is not None:
@@ -286,52 +301,98 @@ class TelemetryService:
 
     def record_power_telemetry(self, packet: PowerPacket) -> None:
         """
-        전력 측정 MCU(ESP32-C3, INA226) 스트리밍 패킷을 처리하고 영속화합니다.
+        [DEPRECATED — 2026-06] INA219 하드웨어 계측 패킷 처리함수.
+
+        Board 3 (INA219 전력 모니터)이 폐지되면서 이 메서드는 더 이상
+        호출되지 않습니다. 하위 호환성을 위해 선언은 보존합니다.
+
+        대체 추정 경로:
+          record_env_telemetry() → _estimate_and_record_power()
+          (PublishPacket 페이로드에서 rtt, retry, sleep_r 자동 추출후 추정)
+        """
+        logger.warning(
+            "[텔레메트리] record_power_telemetry() 호출 — Board 3 하드웨어 거러 중단."
+            " SW 추정 경로(_estimate_and_record_power)를 사용하세요."
+        )
+
+    def _estimate_and_record_power(
+        self,
+        packet: PublishPacket,
+        client_id: str,
+    ) -> None:
+        """
+        PublishPacket 페이로드에서 RTT/retry/sleep 메트릭을 추출하고
+        IEEE Access 2024 공식으로 전력을 추정하여 power.csv에 기록합니다.
 
         실행 순서:
-          1. 패킷 필드로 행 딕셔너리 구성
-          2. self.power_data[node] 인메모리 스냅샷 원자적 갱신
-          3. 전력 CSV에 행 추가
-
-        매개변수
-        --------
-        packet : ESP32-C3에서 수신한 디코딩된 PowerPacket (node "A" 또는 "B").
+          1. 페이로드에서 rtt_ms, retry_count, sleep_mode_ratio 안전 추출
+          2. estimate_energy() 호출 → estimated_energy_mwh 계산
+          3. self.power_data 스냅샷 갱신
+          4. power.csv에 행 추가
         """
+        payload = packet.payload or {}
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-        node      = packet.node.upper()  # 대문자 정규화 ("a" → "A")
+
+        # ── 1단계: 소프트웨어 메트릭 안전 추출 ──────────────────────────────
+        # "rtt", "retry", "sleep_r" 키로 응답이 없으면 기본값
+        rtt_ms           = float(payload.get("rtt",     0.0))
+        retry_count      = int(  payload.get("retry",   0))
+        sleep_mode_ratio = float(payload.get("sleep_r", 0.0))
+        packet_count     = int(  payload.get("pkt",     0))
+        total_bytes      = int(  payload.get("bytes",   0))
+
+        # ── 2단계: IEEE Access 2024 구식으로 에너지 추정 ──────────────────
+        # base_current = (TX_MA × tx_ratio[qos]) + (RX_MA × rx_ratio[qos])
+        # retry_penalty = 1 + (retry_count × 0.5)
+        # estimated_energy_mwh = (base_current × rtt_ms × retry_penalty) / 3600000 × VCC
+        estimated_energy_mwh = estimate_energy(
+            qos=packet.qos,
+            rtt_ms=rtt_ms,
+            retry_count=retry_count,
+        )
 
         row = {
-            "timestamp":  timestamp,
-            "node":       node,
-            "addr_ip":    packet.addr[0],
-            "addr_port":  packet.addr[1],
-            "current_mA": packet.current_mA,
-            "voltage_V":  packet.voltage_V,
-            "power_mW":   packet.power_mW,
+            "timestamp":            timestamp,
+            "client_id":            client_id,
+            "qos":                  packet.qos,
+            "rtt_ms":               rtt_ms,
+            "retry_count":          retry_count,
+            "sleep_mode_ratio":     sleep_mode_ratio,
+            "estimated_energy_mwh": estimated_energy_mwh,
+            "packet_count":         packet_count,
+            "total_bytes":          total_bytes,
         }
 
+        # ── 3단계: 인메모리 스냅샷 갱신 (락 내에서) ─────────────────────
         with self._power_lock:
-            # 처음 보이는 노드 라벨이면 기본 슬롯을 새로 생성합니다
-            if node not in self.power_data:
-                self.power_data[node] = copy.deepcopy(_DEFAULT_POWER_NODE)
+            # client_id를 노드 키로 사용 (하드웨어 A/B 노드 구조 대체)
+            if client_id not in self.power_data:
+                from copy import deepcopy
+                self.power_data[client_id] = deepcopy(_DEFAULT_POWER_NODE)
 
-            # 해당 노드의 스냅샷 갱신
-            snap = self.power_data[node]
-            snap["timestamp"]    = timestamp
-            snap["addr_ip"]      = packet.addr[0]
-            snap["addr_port"]    = packet.addr[1]
-            snap["current_mA"]   = packet.current_mA
-            snap["voltage_V"]    = packet.voltage_V
-            snap["power_mW"]     = packet.power_mW
-            snap["sample_count"] += 1
+            snap = self.power_data[client_id]
+            snap["timestamp"]            = timestamp
+            snap["addr_ip"]              = packet.addr[0]
+            snap["addr_port"]            = packet.addr[1]
+            # 하드웨어 필드 (current_mA, voltage_V, power_mW)를
+            # SW 추정 필드로 매핑하여 기존 REST API 호환성 유지
+            snap["current_mA"]           = 0.0  # SW 추정에서는 실측 불가
+            snap["voltage_V"]            = 0.0
+            snap["power_mW"]             = estimated_energy_mwh * 3_600_000 / max(1.0, rtt_ms)
+            snap["sample_count"]        += 1
+            # 신규 필드 추가 (기존 타입에 없으면 자동 생성)
+            snap["estimated_energy_mwh"] = estimated_energy_mwh
+            snap["rtt_ms"]               = rtt_ms
+            snap["retry_count"]          = retry_count
+            snap["sleep_mode_ratio"]     = sleep_mode_ratio
 
-            # CSV 파일에 행 추가 (락 보유 상태에서 호출)
             self._write_power_row(row)
 
-        logger.debug(
-            "[텔레메트리] POWER Node=%s #%d | %.2f mA  %.3f V  %.2f mW",
-            node, self.power_data[node]["sample_count"],
-            packet.current_mA, packet.voltage_V, packet.power_mW,
+        logger.info(
+            "[\uc804\ub825\ucd94\uc815] client='%s' QoS=%d | RTT=%.2f ms | retry=%d | "
+            "sleep=%.1f%% | energy=%.8f mWh",
+            client_id, packet.qos, rtt_ms, retry_count,
+            sleep_mode_ratio * 100.0, estimated_energy_mwh,
         )
 
     # ──────────────────────────────────────────────────────────────────────────

@@ -11,6 +11,12 @@ v1에서의 변경 사항:
   • 이제 모든 패킷에 `timestamp`(서버 측 도착 시간, Unix float)가 포함됩니다.
   • PublishPacket, PowerPacket, ConnectPacket, DisconnectPacket은 모두
     REST 엔드포인트 및 향후 DB 어댑터에서 사용되는 `to_dict()` 헬퍼를 노출합니다.
+
+[2026-06 리팩토링 수정 사항]
+  • EstimatedPowerPacket 추가:
+      하드웨어 INA219 PowerPacket을 대체하는 소프트웨어 정의 전력 추정값 컨테이너.
+      IEEE Access 2024 (DOI: 10.1109/ACCESS.2024.3523864) 기반 운영.
+  • PublishPacket.to_dict()에 rtt_ms, retry_count, sleep_mode_ratio 필드 추가.
 ─────────────────────────────────────────────────────────────────────────────
 """
 
@@ -77,18 +83,22 @@ class PublishPacket:
     def to_dict(self) -> Dict[str, Any]:
         p = self.payload or {}
         return {
-            "packet_type": "PUBLISH",
-            "addr_ip":     self.addr[0],
-            "addr_port":   self.addr[1],
-            "msg_id":      self.msg_id,
-            "qos":         self.qos,
-            "topic_id":    self.topic_id,
-            "timestamp":   self.timestamp,
-            "temp":        p.get("temp"),
-            "hum":         p.get("hum"),
-            "gas":         p.get("gas"),
-            "power":       p.get("power"),
-            "payload_raw": self.payload_raw,
+            "packet_type":      "PUBLISH",
+            "addr_ip":          self.addr[0],
+            "addr_port":        self.addr[1],
+            "msg_id":           self.msg_id,
+            "qos":              self.qos,
+            "topic_id":         self.topic_id,
+            "timestamp":        self.timestamp,
+            "temp":             p.get("temp"),
+            "hum":              p.get("hum"),
+            "gas":              p.get("gas"),
+            "power":            p.get("power"),
+            # [2026-06] 소프트웨어 정의 전력 추정 메트릭
+            "rtt_ms":           p.get("rtt"),           # 왕복 시간 (ms)
+            "retry_count":      p.get("retry"),         # 재전송 횟수
+            "sleep_mode_ratio": p.get("sleep_r"),      # Sleep 비율 (0.0~1.0)
+            "payload_raw":      self.payload_raw,
         }
 
 
@@ -138,10 +148,20 @@ class PubrelPacket:
 # 전력 MCU 프로토콜 패킷  (ESP32-C3, 포트 6000)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 전력 MCU 프로토콜 패킷  (ESP32-C3, 포트 6000)
+# ──────────────────────────────────────────────────────────────────────────────
+
 @dataclass
 class PowerPacket:
     """
     ESP32-C3 전력 MCU에서 전송되는 JSON 전력 스트리밍 패킷입니다.
+
+    [DEPRECATED — 2026-06]
+    INA219 하드웨어 전력 계측 Board 3이 폐지되면서 이 패킷 유형도
+    새로운 코드기에서 사용되지 않습니다.
+    소프트웨어 추정 데이터는 EstimatedPowerPacket으로 대체되었습니다.
+    하위 호환성을 위해 클래스 선언은 보존합니다.
 
     예상되는 JSON 키:
       node        : "A" | "B"
@@ -173,7 +193,56 @@ class PowerPacket:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# [2026-06 신규] 소프트웨어 정의 전력 추정 패킷
+# IEEE Access 2024 (DOI: 10.1109/ACCESS.2024.3523864) 기반
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class EstimatedPowerPacket:
+    """
+    PowerPacket(하드웨어 계측)을 대체하는 소프트웨어 정의 전력 추정 결과를
+    담는 컨테이너입니다.
+
+    power_estimator.estimate_energy()가 계산한 결과를
+    telemetry_service를 통해 power.csv에 영속화하는 데 사용됩니다.
+
+    소스 데이터:
+      MQTT-SN PublishPacket 페이로드의 rtt, retry, sleep_r 필드에서 동적 계산됩니다.
+      하드웨어 계측 없이 게이트웨이에서 실시간 추정합니다.
+    """
+    addr:                 Addr
+    client_id:            str      # ESP32 클라이언트 ID ("ESP32-Gingerbread" 등)
+    qos:                  int      # 해당 트랜잭션의 QoS 레벨
+    rtt_ms:               float    # PUBLISH~ACK 왕복 시간 (ms)
+    retry_count:          int      # 재전송 횟수
+    sleep_mode_ratio:     float    # Sleep 비율 (0.0~1.0)
+    estimated_energy_mwh: float    # IEEE Access 2024 추정 소비 에너지 (mWh)
+    packet_count:         int      # 해당 장치의 누적 패킷 수
+    total_bytes:          int      # 해당 장치의 누적 전송 바이트 수
+    timestamp:            float    = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "packet_type":          "ESTIMATED_POWER",
+            "addr_ip":              self.addr[0],
+            "addr_port":            self.addr[1],
+            "client_id":            self.client_id,
+            "qos":                  self.qos,
+            "rtt_ms":               self.rtt_ms,
+            "retry_count":          self.retry_count,
+            "sleep_mode_ratio":     self.sleep_mode_ratio,
+            "estimated_energy_mwh": self.estimated_energy_mwh,
+            "packet_count":         self.packet_count,
+            "total_bytes":          self.total_bytes,
+            "timestamp":            self.timestamp,
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 코드베이스 전체에서 사용되는 유니온 타입 힌트
 # ──────────────────────────────────────────────────────────────────────────────
 
-AnyPacket = Union[ConnectPacket, PublishPacket, DisconnectPacket, PubrelPacket, PowerPacket]
+AnyPacket = Union[
+    ConnectPacket, PublishPacket, DisconnectPacket,
+    PubrelPacket, PowerPacket, EstimatedPowerPacket,
+]

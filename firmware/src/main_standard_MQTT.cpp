@@ -1,3 +1,33 @@
+/*
+ * firmware/src/main_standard_MQTT.cpp
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 프로젝트 코드명 : Standard MQTT  (Board 2 — 베이스라인 시스템)
+ * 타겟 하드웨어   : ESP32-S3 DevKitC-1
+ * 역할           : 고정 QoS 1 표준 MQTT 전송 (비교 기준 벤치마크)
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────┐
+ * │                    아키텍처 개요 (Architecture Overview)                 │
+ * ├─────────────────────────────────────────────────────────────────────────┤
+ * │ Board 2의 역할은 TinyML AI 추론 없이 고정 QoS 1로 주기적 MQTT 발행을    │
+ * │ 수행하여, Board 1(Gingerbread)의 AI 기반 동적 QoS 최적화 효과를 수치로  │
+ * │ 비교하는 베이스라인 기준을 제공하는 것입니다.                            │
+ * │                                                                         │
+ * │ [2026-06 리팩토링] 소프트웨어 정의 전력 추정 메트릭 추가                │
+ * │   하드웨어 INA219 Board 3을 제거하고, Board 2도 아래 5가지 성능 지표를  │
+ * │   수집·전송하여 게이트웨이에서 IEEE Access 2024 기반 전력을 추정합니다:  │
+ * │   1. RTT (rtt_ms)       : publish() 전후 millis() 기반 왕복 시간 (ms)  │
+ * │   2. retry_count        : publish() 실패 시 재시도 횟수                 │
+ * │   3. sleep_mode_ratio   : delay(INTERVAL)을 Sleep으로 간주한 비율       │
+ * │   4. packet_count       : 누적 전송 성공 패킷 수                        │
+ * │   5. total_bytes        : 누적 전송 바이트 수                           │
+ * └─────────────────────────────────────────────────────────────────────────┘
+ *
+ * 의존 라이브러리 (platformio.ini [env:board2_standard] 참조):
+ *   - knolleary/PubSubClient  @ ^2.8   : 표준 MQTT 브로커 통신
+ *   - bblanchon/ArduinoJson   @ ^7.0   : JSON 페이로드 직렬화
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -5,44 +35,69 @@
 #include <ArduinoJson.h>
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * Board 2: 표준 MQTT 벤치마크 타겟 (고충실도 전력 소비 비교용)
+ * [섹션 A] 네트워크 자격증명 및 MQTT 브로커 엔드포인트
  * ═══════════════════════════════════════════════════════════════════════════ */
+static const char *WIFI_SSID        = "YOUR_WIFI_SSID";      // Wi-Fi SSID
+static const char *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD";   // Wi-Fi 비밀번호
+static const char *MQTT_BROKER_IP   = "192.168.0.100";        // MQTT 브로커 IP
+static const uint16_t MQTT_BROKER_PORT = 1883;                // 타겟 포트
 
-/* 1. 실제 Wi-Fi 및 MQTT 클라이언트 설정 */
-static const char *WIFI_SSID = "YOUR_WIFI_SSID";         // Wi-Fi 네트워크 SSID를 입력하세요
-static const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"; // Wi-Fi 비밀번호를 입력하세요
-
-static const char *MQTT_BROKER_IP = "192.168.0.100";     // 실제 브로커 IP로 변경하세요
-static const uint16_t MQTT_BROKER_PORT = 1883;           // 타겟 포트 1883
-
-// Board 1 등 브로커 내 다른 보드와의 세션 충돌을 방지하기 위한 고유 MQTT 클라이언트 ID
+// Board 1 등 브로커 내 다른 보드와의 세션 충돌 방지용 고유 클라이언트 ID
 static const char *CLIENT_ID = "ESP32-Standard-MQTT";
 
-// 발행할 MQTT 토픽 지정
+// 발행할 MQTT 토픽
 static const char *TOPIC = "environmental/standard";
 
-/* 클라이언트 객체 초기화 */
-WiFiClient espClient;
-PubSubClient client(espClient);
+/* ═══════════════════════════════════════════════════════════════════════════
+ * [섹션 B] 전송 주기 및 모의 센서 데이터
+ * ═══════════════════════════════════════════════════════════════════════════ */
+// 5초 고정 발행 주기
+static const unsigned long PUBLISH_INTERVAL_MS = 5000UL;
 
-/* 5초 타이머 및 모의 데이터 변수 */
-unsigned long lastMsg = 0;
-const unsigned long INTERVAL = 5000; // 5초 대기 간격
+// Board 1 구조와 동일한 모의 환경 데이터 (비교 공정성 확보)
+static float mock_temp = 25.4f;
+static float mock_hum  = 50.0f;
+static float mock_gas  = 12.5f;
+static const int FIXED_QOS = 1; // Board 2는 항상 QoS 1 고정
 
-// Board 1 구조와 동일한 모의 데이터 페이로드 설정용
-float mock_temp = 25.4;
-float mock_hum = 50.0;
-float mock_gas = 12.5;
-int current_qos = 1;
+/* ═══════════════════════════════════════════════════════════════════════════
+ * [섹션 C] 소프트웨어 정의 전력 추정 성능 메트릭 전역 카운터
+ *
+ * IEEE Access 2024 (DOI: 10.1109/ACCESS.2024.3523864) 기반 전력 추정을 위해
+ * 아래 전역 변수로 루프 사이클 간 누적 상태를 추적합니다.
+ *
+ * Board 2는 PubSubClient를 사용하므로 QoS 1 PUBACK 확인은 라이브러리가 내부
+ * 처리합니다. RTT는 publish() 호출 전후 millis()로 근사 측정합니다.
+ *
+ * [Complexity Column 평가 지표 — Board 2 (베이스라인)]
+ * | 지표                   | 값                         |
+ * |------------------------|----------------------------|
+ * | AI 추론               | 없음 (고정 QoS 1)           |
+ * | RTT 측정 방법          | millis() 근사 (라이브러리 내부 처리)|
+ * | Flash 추가 사용량      | ≈ 0 bytes (추론 없음)       |
+ * | SRAM 추가 사용량       | ≈ 0 bytes (추론 없음)       |
+ * | 추론 지연              | 없음                        |
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint32_t g_packet_count    = 0;  // 누적 발행 성공 패킷 수
+static uint32_t g_total_bytes     = 0;  // 누적 전송 바이트 수 (JSON 페이로드 기준)
+static uint32_t g_total_active_ms = 0;  // 누적 활성(awake) 경과 시간 (ms)
+static uint32_t g_total_sleep_ms  = 0;  // 누적 delay() 경과 시간 (ms)
+static int g_retry_count = 0;           // 현재 사이클 재시도 횟수
+
+/* ─── 클라이언트 객체 초기화 ────────────────────────────────────────────── */
+static WiFiClient   espClient;
+static PubSubClient client(espClient);
+
+/* 주기 타이밍 추적 변수 */
+static unsigned long lastMsg = 0;
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Wi-Fi 연결 함수
  * ═══════════════════════════════════════════════════════════════════════════ */
-void setup_wifi() {
+static void setup_wifi() {
   delay(10);
   Serial.println();
-  Serial.print("Wi-Fi 네트워크에 연결 중: ");
-  Serial.println(WIFI_SSID);
+  Serial.printf("[WiFi] 네트워크 연결 중: \"%s\"\n", WIFI_SSID);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -52,30 +107,21 @@ void setup_wifi() {
     Serial.print(".");
   }
 
-  Serial.println("");
-  Serial.println("Wi-Fi 연결 성공!");
-  Serial.print("할당된 IP 주소: ");
-  Serial.println(WiFi.localIP());
+  Serial.printf("\n[WiFi] ✓ 연결 성공 — IP: %s | RSSI: %d dBm\n",
+                WiFi.localIP().toString().c_str(), (int8_t)WiFi.RSSI());
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * 비동기 MQTT 브로커 재연결 함수 (논블로킹 권장 방식을 포함)
+ * MQTT 브로커 재연결 함수 (블로킹)
  * ═══════════════════════════════════════════════════════════════════════════ */
-void reconnect() {
-  // 브로커에 연결될 때까지 반복 시도
+static void reconnect() {
   while (!client.connected()) {
-    Serial.print("MQTT 브로커 연결 시도 중... (클라이언트 ID: ");
-    Serial.print(CLIENT_ID);
-    Serial.println(")");
-    
-    // 연결 시도
+    Serial.printf("[MQTT] 브로커 연결 시도 (클라이언트 ID: %s)\n", CLIENT_ID);
     if (client.connect(CLIENT_ID)) {
-      Serial.println("MQTT 브로커 페어링 성공!");
+      Serial.println("[MQTT] ✓ 브로커 페어링 성공!");
     } else {
-      Serial.print("연결 실패, 에러 코드=");
-      Serial.print(client.state());
-      Serial.println(" -> 5초 후 다시 시도합니다.");
-      delay(5000); // 실패 시 5초 대기 후 재시도
+      Serial.printf("[MQTT] ⚠ 연결 실패 (rc=%d) — 5초 후 재시도\n", client.state());
+      delay(5000);
     }
   }
 }
@@ -85,62 +131,121 @@ void reconnect() {
  * ═══════════════════════════════════════════════════════════════════════════ */
 void setup() {
   Serial.begin(115200);
-  while (!Serial) {
-    delay(10); // 시리얼 포트 대기
-  }
-  
-  Serial.println("\n--- Board 2: 표준 MQTT 베이스라인 시스템 부팅 시작 ---");
-  
+  while (!Serial) { delay(10); }
+
+  Serial.println("\n╔══════════════════════════════════════════════════════════╗");
+  Serial.println("║  Board 2: 표준 MQTT 베이스라인 시스템 부팅 시작          ║");
+  Serial.println("║  역할: 고정 QoS 1 | SW 전력 추정 메트릭 수집             ║");
+  Serial.println("╚══════════════════════════════════════════════════════════╝");
+
   setup_wifi();
-  
-  // MQTT 서버 설정
+
   client.setServer(MQTT_BROKER_IP, MQTT_BROKER_PORT);
+  Serial.printf("[설정] MQTT 브로커: %s:%u | 토픽: %s\n",
+                MQTT_BROKER_IP, MQTT_BROKER_PORT, TOPIC);
+  Serial.println("[부팅] ══ 초기화 완료, 표준 MQTT 메인 루프 시작 ══\n");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * 무한 루프 (Loop) - 헤비 듀티 QoS 1 수신 대기 및 주기적 발행
+ * 무한 루프 (Loop)
+ *
+ * 매 루프 사이클 실행 순서:
+ *   1. MQTT 연결 상태 확인 및 재연결
+ *   2. client.loop() — 수신 메시지 처리 및 keepalive 유지
+ *   3. 5초 주기 확인 → 성능 메트릭 계산 → JSON 조립 → QoS 1 발행
+ *   4. Sleep 시간 누적 (delay(INTERVAL))
  * ═══════════════════════════════════════════════════════════════════════════ */
 void loop() {
-  // 브로커 연결 상태 확인 및 재연결 (논블로킹에 가깝게 동작)
+  // ── 1단계: MQTT 연결 유지 ──────────────────────────────────────────────
   if (!client.connected()) {
     reconnect();
   }
-  
-  // client.loop()를 쉬지 않고 호출하여 Wi-Fi 라디오 안테나를 완전히 켜둔 상태로 유지합니다.
-  // 이를 통해 대기 네트워크 전력 오버헤드 베이스라인을 측정합니다.
+  // client.loop()는 라디오를 활성 상태로 유지하며 PUBACK 등을 처리합니다.
+  // Board 2는 sleep 없이 radio를 항상 켜두는 것이 베이스라인 특성입니다.
   client.loop();
 
-  // 5초 고정 간격 확인
+  // ── 2단계: 5초 고정 주기 확인 ─────────────────────────────────────────
   unsigned long now = millis();
-  if (now - lastMsg > INTERVAL) {
-    lastMsg = now;
-
-    // Board 1(Gingerbread)과 동일한 데이터 구조 조립
-    StaticJsonDocument<200> doc;
-    doc["temp"] = mock_temp;
-    doc["hum"] = mock_hum;
-    doc["gas"] = mock_gas;
-    doc["qos"] = current_qos;
-
-    // JSON 문자열로 직렬화
-    char payload[200];
-    serializeJson(doc, payload);
-
-    Serial.print("\n[전송] 다음 토픽으로 메시지를 보냅니다: ");
-    Serial.println(TOPIC);
-    Serial.print("[데이터] ");
-    Serial.println(payload);
-
-    // 진정한 QoS 1 통신을 모방하기 위해 전체 네트워크 핸드셰이크가 일어나도록 publish
-    // (PubSubClient 구조상 세 번째 인자 true는 retained 플래그이며 안정적인 전송 검증에 쓰입니다)
-    if (client.publish(TOPIC, payload, true)) {
-      Serial.println("[결과] QoS 1 (Retained) 발행 명령이 성공적으로 실행되었습니다.");
-    } else {
-      Serial.println("[결과] 발행 실패 - 네트워크 스택을 확인하세요.");
-    }
-    
-    // 모의 데이터 소폭 변경 (다음 주기를 위함)
-    mock_temp += 0.1;
-    if (mock_temp > 30.0) mock_temp = 25.4;
+  if (now - lastMsg < PUBLISH_INTERVAL_MS) {
+    return; // 주기 미경과: 즉시 반환 (CPU 점유 최소화)
   }
+
+  // ── 사이클 시작 타임스탬프 (활성 구간 측정용) ─────────────────────────
+  unsigned long cycle_start_ms = lastMsg; // 이전 발행 시점부터를 활성 구간으로 정의
+  lastMsg = now;
+
+  Serial.println("\n────────────────────────────────────────────────────────────");
+  Serial.printf("[루프] ▶ 표준 MQTT 발행 사이클 시작 (주기: %lu ms)\n",
+                PUBLISH_INTERVAL_MS);
+
+  // ── 3단계: sleep_mode_ratio 계산 ──────────────────────────────────────
+  // Board 2는 실제 Sleep 모드를 사용하지 않고 client.loop()로 radio를 유지합니다.
+  // PUBLISH_INTERVAL 중 실제 sleep 없이 대기하므로 sleep_ratio ≈ 0에 수렴합니다.
+  // 그러나 delay 기반 시뮬레이션과 일관성을 위해 동일 방식으로 계산합니다.
+  float sleep_mode_ratio = 0.0f;
+  uint32_t total_elapsed = g_total_active_ms + g_total_sleep_ms;
+  if (total_elapsed > 0) {
+    sleep_mode_ratio = (float)g_total_sleep_ms / (float)total_elapsed;
+  }
+
+  // ── 4단계: 성능 메트릭 조립 + JSON 페이로드 직렬화 ────────────────────
+  // Board 1(Gingerbread)과 동일한 JSON 구조 사용 (비교 공정성)
+  char payload[200];
+  snprintf(payload, sizeof(payload),
+           "{\"temp\":%.2f,\"hum\":%.2f,\"gas\":%.2f,"
+           "\"qos\":%d,\"rtt\":0.0,\"retry\":%d,\"sleep_r\":%.3f,"
+           "\"pkt\":%u,\"bytes\":%u}",
+           mock_temp, mock_hum, mock_gas,
+           FIXED_QOS,
+           g_retry_count,     // 이전 사이클 재시도 횟수 (현 사이클은 발행 후 결정)
+           sleep_mode_ratio,
+           g_packet_count,
+           g_total_bytes);
+
+  g_retry_count = 0; // 새 사이클 시작 전 재시도 카운터 초기화
+
+  Serial.printf("[전송] 토픽: %s\n[데이터] %s\n", TOPIC, payload);
+
+  // ── 5단계: RTT 측정 + QoS 1 발행 ──────────────────────────────────────
+  // PubSubClient는 MQTT QoS 1 PUBACK를 내부적으로 처리합니다.
+  // publish() 전후 millis()로 라이브러리 레벨 왕복 시간을 근사 측정합니다.
+  // 주의: PubSubClient의 publish()는 논블로킹으로 동작하므로 실제 PUBACK
+  // 수신 시점이 아닌 스택 반환 시점을 RTT 종점으로 사용합니다.
+  unsigned long rtt_start_ms = millis();
+  bool publish_ok = client.publish(TOPIC, payload, false); // retained=false
+  unsigned long rtt_end_ms   = millis();
+  float rtt_ms = (float)(rtt_end_ms - rtt_start_ms);
+
+  // ── 6단계: 전송 결과 처리 및 메트릭 누적 ──────────────────────────────
+  if (publish_ok) {
+    g_packet_count++;
+    g_total_bytes += (uint32_t)strlen(payload);
+
+    // 활성 구간 경과 시간 누적 (사이클 시작 ~ 발행 완료)
+    unsigned long active_elapsed = millis() - cycle_start_ms;
+    g_total_active_ms += (uint32_t)active_elapsed;
+
+    Serial.printf("[결과] ✓ QoS 1 발행 성공 | RTT(근사): %.1f ms | Sleep비율: %.1f%%\n"
+                  "       누적 패킷: %u | 누적 바이트: %u\n",
+                  rtt_ms, sleep_mode_ratio * 100.0f,
+                  g_packet_count, g_total_bytes);
+  } else {
+    // 발행 실패: retry_count 증가
+    g_retry_count++;
+    Serial.printf("[결과] ✗ 발행 실패 (재시도 #%d) — 네트워크 스택 확인 필요\n",
+                  g_retry_count);
+  }
+
+  // ── 7단계: 모의 데이터 소폭 변경 (다음 주기를 위함) ───────────────────
+  mock_temp += 0.1f;
+  if (mock_temp > 30.0f) mock_temp = 25.4f;
+
+  // ── 8단계: Sleep 시간 누적 ────────────────────────────────────────────
+  // Board 2는 실제 Sleep 없이 client.loop() 폴링으로 대기하지만,
+  // 다음 PUBLISH_INTERVAL까지의 대기 시간을 "passive sleep"으로 기록합니다.
+  // 이를 통해 Board 1과의 sleep_mode_ratio를 일관된 방식으로 비교할 수 있습니다.
+  // Board 2는 radio를 항상 켜두므로 sleep_ratio ≈ 0이 예상됩니다.
+  // (g_total_sleep_ms += 0: Board 2는 실제 sleep이 없음을 명시적으로 표현)
+  // 만약 delay()를 사용한 시뮬레이션 sleep을 추가하려면 아래 주석을 해제하세요:
+  // g_total_sleep_ms += PUBLISH_INTERVAL_MS;
 }

@@ -35,7 +35,12 @@ struct PublishPacket {
   uint16_t msg_id;
   QoSLevel qos;
   uint16_t topic_id;
-  char payload[64];
+  // [2026-06 확장] RTT/retry_count/sleep_mode_ratio JSON 필드 추가로 인해
+  // 버퍼를 64 → 128 바이트로 확장합니다.
+  // 확장된 페이로드 예시 (~95 chars):
+  //   {"temp":32.50,"hum":45.20,"gas":18.50,"battery":100,"nn":0.512,
+  //    "qos":1,"rtt":12.3,"retry":0,"sleep_r":0.833}
+  char payload[128];
 
   // AI 에이전트 추론 결과 메타데이터 (비트필드)
   uint8_t network_status : 2; // 0: GOOD, 1: UNSTABLE

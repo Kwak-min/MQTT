@@ -8,7 +8,8 @@ recvfrom()을 지속적으로 호출하는 데몬 스레드를 실행합니다.
 
 main.py에서 두 개의 인스턴스가 생성됩니다:
   • GingerbreadListener  — 포트 5000, Node B 패킷 (바이너리 Gingerbread)
-  • PowerListener        — 포트 6000, ESP32-C3 JSON 전력 스트리밍
+  • PowerListener        — [DEPRECATED] 포트 6000, ESP32-C3 JSON 전력 스트리밍
+                           Board 3 하드웨어 폐지로 SW 추정으로 대체됨
 
 의존성 주입 (main.py에서 주입되며, 여기서 임포트되지 않음):
   ┌────────────────────────────────────────────────────────────┐
@@ -25,7 +26,14 @@ main.py에서 두 개의 인스턴스가 생성됩니다:
   .recv_count   — start() 이후 수신된 총 데이터그램 수
   .error_count  — start() 이후 총 디스패치/파싱 에러 수
   .is_alive     — 리스너 스레드가 실행 중인 동안 True
-─────────────────────────────────────────────────────────────────────────────
+──
+[2026-06 업데이트]
+  • GingerbreadListener 에 on_telemetry 콜백 추가:
+      topic_id == 2 (성능/전력 메트릭 체널)로 수신된 PUBLISH 패킷을
+      파워 시스템으로 라우팅합니다.
+      이 패킷에는 핸드셰이크 완료 후 실측된 RTT/retry/sleep값이 포함됨.
+  • PowerListener: DEPRECATED (Board 3 INA219 하드웨어 폐지)
+───────────────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
@@ -192,10 +200,12 @@ class GingerbreadListener(UDPListener):
         on_connect:    Callable[[ConnectPacket], None],
         on_disconnect: Callable[[DisconnectPacket], None],
         on_deliver:    Callable[[PublishPacket], None],
+        on_telemetry:  Optional[Callable[[PublishPacket], None]] = None,
     ) -> None:
         super().__init__(host, port, name="Gingerbread")
         self._on_connect    = on_connect
         self._on_disconnect = on_disconnect
+        self._on_telemetry  = on_telemetry  # [2026-06] topic_id==2 SW 전력 메트릭 콜백
 
         # QoSHandler는 클라이언트에 PUBACK/PUBREC/PUBCOMP를 다시 보내는 데
         # 필요한 동일한 소켓 참조를 소유하도록 여기서 생성됩니다.
@@ -217,11 +227,23 @@ class GingerbreadListener(UDPListener):
             self._on_connect(packet)
 
         elif isinstance(packet, PublishPacket):
-            logger.debug(
-                "[Gingerbread] PUBLISH msg_id=%d qos=%d from %s",
-                packet.msg_id, packet.qos, addr,
-            )
-            self._qos_handler.handle_publish(packet)
+            # [2026-06] topic_id 기반 라우팅
+            #   topic_id == 1 : 환경 센서 데이터 (표준 QoS 핸드셰이크 경로)
+            #   topic_id == 2 : 실측 성능/전력 메트릭 (SW 전력 추정 트리거)
+            #                   펌웨어가 핸드셰이크 완료 후 실측 RTT/retry를 담아 전송
+            if packet.topic_id == 2 and self._on_telemetry is not None:
+                logger.info(
+                    "[Gingerbread] TELEMETRY(topic=2) msg_id=%d qos=%d from %s — "
+                    "SW 전력 추정 트리거",
+                    packet.msg_id, packet.qos, addr,
+                )
+                self._on_telemetry(packet)
+            else:
+                logger.debug(
+                    "[Gingerbread] PUBLISH msg_id=%d qos=%d topic=%d from %s",
+                    packet.msg_id, packet.qos, packet.topic_id, addr,
+                )
+                self._qos_handler.handle_publish(packet)
 
         elif isinstance(packet, DisconnectPacket):
             logger.info("[Gingerbread] DISCONNECT from %s", addr)
@@ -243,7 +265,18 @@ class GingerbreadListener(UDPListener):
 
 class PowerListener(UDPListener):
     """
-    ESP32-C3 전력 MCU JSON 전력 스트리밍 패킷을 위해 포트 6000에서 수신 대기합니다.
+    [DEPRECATED — 2026-06]
+    ESP32-C3 INA219 하드웨어 전력 모니터 Board 3이 폐지되면서
+    이 리스너도 더 이상 다운되지 않습니다.
+
+    대체 전력 정보 흐름:
+      Board 1 (ESP32-S3) 편웨어가 핸드셰이크 후 RTT/retry 실쪻측값을
+      topic_id=2 PUBLISH 패킷으로 전송 → GingerbreadListener.on_telemetry
+      → telemetry_service._estimate_and_record_power()
+      → IEEE Access 2024 공식으로 소비 에너지 실시간 추정
+
+    하위 호환성을 위해 클래스 선언을 보존합니다.
+    main.py에서 이 리스너를 생성하지 마세요.
     """
 
     def __init__(
@@ -256,9 +289,9 @@ class PowerListener(UDPListener):
         self._on_power = on_power
 
     def _dispatch(self, raw: bytes, addr) -> None:
-        packet = parse_power_packet(raw, addr)
-        logger.debug(
-            "[PowerMCU] Node=%s  %.2f mA  %.3f V  %.2f mW from %s",
-            packet.node, packet.current_mA, packet.voltage_V, packet.power_mW, addr,
+        logger.warning(
+            "[PowerMCU] DEPRECATED: Board 3 하드웨어 전력 모니터 패킷 수신 —"
+            " 소프트웨어 추정 경로를 사용하세요."
         )
+        packet = parse_power_packet(raw, addr)
         self._on_power(packet)
