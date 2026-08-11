@@ -16,3 +16,6 @@ python-dotenv>=1.0.0
 # MQTT 클라이언트 — ESP32 설정 동기화 (gingerbread/config 토픽 QoS 1 발행)
 # ConfigService가 config.json 변경 시 브로커를 통해 ESP32에 즉시 푸시합니다.
 paho-mqtt>=1.6.1
+
+# WebSocket 지원 — 대시보드 실시간 텔레메트리 스트리밍 (WS /ws/telemetry)
+flask-sock>=0.7.0

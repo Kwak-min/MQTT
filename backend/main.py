@@ -53,6 +53,8 @@ from app.services.session_service   import SessionService
 from app.services.telemetry_service import TelemetryService
 # ConfigService: config.json 동적 재로더 + MQTT 게이트웨이 동기화 서비스
 from app.services.config_service    import ConfigService
+# ControlService: 대시보드 → ESP32-S3 다운링크 제어 패킷 전송
+from app.services.control_service   import ControlService
 from app.socket.udp_listener        import GingerbreadListener, PowerListener
 from app.models.packet              import ConnectPacket, DisconnectPacket, PublishPacket, PowerPacket
 
@@ -70,6 +72,8 @@ def main() -> None:
     # ConfigService 초기화 — config.json 로드 및 MQTT 브로커 연결 시도
     # MQTT 브로커가 없어도 서버는 정상 동작합니다 (설정 파일 읽기/쓰기는 유지됨)
     config_svc    = ConfigService()
+    # ControlService 초기화 — 대시보드에서 ESP32-S3로의 다운링크 제어 패킷 전송
+    control_svc   = ControlService()
     logger.info("[Main] Services initialised.")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -132,6 +136,7 @@ def main() -> None:
         session_svc=session_svc,
         telemetry_svc=telemetry_svc,
         config_svc=config_svc,
+        control_svc=control_svc,
         gingerbread_listener=gingerbread_listener,
         power_listener=power_listener,
     )
@@ -157,6 +162,7 @@ def _start_flask_api(
     session_svc,
     telemetry_svc,
     config_svc=None,
+    control_svc=None,
     gingerbread_listener=None,
     power_listener=None,
 ) -> None:
@@ -164,11 +170,16 @@ def _start_flask_api(
     백그라운드 데몬 스레드에서 Flask REST API를 시작합니다.
     React/Vue 개발 서버에서 접근할 수 있도록 0.0.0.0:8080에 바인딩됩니다.
 
-    두 블루프린트를 등록합니다:
-      /api/telemetry/...  — 환경 + 전력 데이터 + SSE 스트림
-      /api/sessions/...   — 디바이스 세션 테이블
-      /api/diagnostics    — QoS 카운터 + 리스너 상태
-      /api/health         — 활성 상태 점검(liveness probe)
+    등록되는 블루프린트:
+      /api/telemetry/...     — 환경 + 전력 데이터 + SSE 스트림
+      /api/sessions/...      — 디바이스 세션 테이블
+      /api/diagnostics       — QoS 카운터 + 리스너 상태
+      /api/health            — 활성 상태 점검(liveness probe)
+      /api/config            — 설정 동기화 (GET/POST)
+      /api/v1/control        — 다운링크 제어 패킷 전송 (POST)
+      /api/v1/telemetry/...  — 대시보드 텔레메트리 조회 (GET)
+      /api/v1/logs/...       — CSV 로그 조회/다운로드 (GET)
+      /ws/telemetry          — 실시간 텔레메트리 WebSocket
 
     Flask가 설치되어 있지 않은 경우, 이 함수는 경고를 로깅하고 정상적으로 반환됩니다.
     — REST API가 없어도 UDP 게이트웨이는 계속 작동합니다.
@@ -180,6 +191,12 @@ def _start_flask_api(
         from app.controllers.session_controller   import create_blueprint as create_session_bp
         # 설정 동기화 컨트롤러 임포트 (GET/POST /api/config 엔드포인트)
         from app.controllers.config_controller    import create_blueprint as create_config_bp
+        # [신규] 다운링크 제어 컨트롤러 임포트 (POST /api/v1/control)
+        from app.controllers.control_controller   import create_blueprint as create_control_bp
+        # [신규] 대시보드 컨트롤러 임포트 (/api/v1/telemetry/latest, /api/v1/logs/*)
+        from app.controllers.dashboard_controller import create_blueprint as create_dashboard_bp
+        # [신규] WebSocket 컨트롤러 임포트 (WS /ws/telemetry)
+        from app.controllers.websocket_controller import init_websocket
     except ImportError as exc:
         logger.warning(
             "[Main] Flask dependency missing — REST API disabled. "
@@ -189,7 +206,10 @@ def _start_flask_api(
 
     flask_app = Flask(__name__)
     # 개발 중에는 React/Vue 개발 서버(localhost:3000)를 허용합니다.
-    CORS(flask_app, resources={r"/api/*": {"origins": "*"}})
+    CORS(flask_app, resources={
+        r"/api/*": {"origins": "*"},
+        r"/ws/*":  {"origins": "*"},
+    })
 
     # 원격 분석(telemetry) 블루프린트 등록 (/api/telemetry/*, /api/diagnostics, /api/health 포함)
     telemetry_bp = create_telemetry_bp(
@@ -211,13 +231,27 @@ def _start_flask_api(
     else:
         logger.warning("[Main] ConfigService가 없어 설정 API 엔드포인트가 비활성화됩니다.")
 
+    # [신규] 다운링크 제어 블루프린트 등록 (POST /api/v1/control)
+    if control_svc is not None:
+        control_bp = create_control_bp(control_svc=control_svc)
+        flask_app.register_blueprint(control_bp, url_prefix="/api/v1")
+    else:
+        logger.warning("[Main] ControlService가 없어 제어 API 엔드포인트가 비활성화됩니다.")
+
+    # [신규] 대시보드 블루프린트 등록 (/api/v1/telemetry/latest, /api/v1/logs/*)
+    dashboard_bp = create_dashboard_bp(telemetry_svc=telemetry_svc)
+    flask_app.register_blueprint(dashboard_bp, url_prefix="/api/v1")
+
+    # [신규] WebSocket 엔드포인트 등록 (WS /ws/telemetry)
+    init_websocket(flask_app, telemetry_svc)
+
     api_thread = threading.Thread(
         target=lambda: flask_app.run(
             host="0.0.0.0",
             port=8080,
             debug=False,        # 메인 스레드가 아닌 경우 반드시 False여야 함
             use_reloader=False,
-            threaded=True,      # SSE에 필요함 — 각 SSE 클라이언트는 자체 스레드를 가짐
+            threaded=True,      # SSE/WebSocket에 필요함 — 각 클라이언트는 자체 스레드를 가짐
         ),
         daemon=True,
         name="flask-api",
@@ -225,7 +259,7 @@ def _start_flask_api(
     api_thread.start()
 
     logger.info("[Main]   -> REST API (Flask)          : http://0.0.0.0:8080/api")
-    logger.info("[Main]     Endpoints:")
+    logger.info("[Main]     Endpoints (기존):")
     logger.info("[Main]       GET  /api/health")
     logger.info("[Main]       GET  /api/diagnostics")
     logger.info("[Main]       GET  /api/telemetry/env")
@@ -239,6 +273,13 @@ def _start_flask_api(
     logger.info("[Main]       GET  /api/config                  (현재 설정 조회)")
     logger.info("[Main]       POST /api/config                  (설정 갱신 → MQTT 푸시)")
     logger.info("[Main]       POST /api/config/reload           (config.json 강제 재로드)")
+    logger.info("[Main]     Endpoints (대시보드 신규):")
+    logger.info("[Main]       POST /api/v1/control              (다운링크 제어 패킷 전송)")
+    logger.info("[Main]       GET  /api/v1/telemetry/latest     (환경+전력 병합 조회)")
+    logger.info("[Main]       GET  /api/v1/logs/telemetry       (텔레메트리 CSV 조회)")
+    logger.info("[Main]       GET  /api/v1/logs/power           (전력 CSV 조회)")
+    logger.info("[Main]       GET  /api/v1/logs/export          (CSV 파일 다운로드)")
+    logger.info("[Main]       WS   /ws/telemetry                (실시간 WebSocket 스트림)")
 
 
 if __name__ == "__main__":
