@@ -195,8 +195,8 @@ struct SensorInputs {
 static WiFiUDP      udp;                       // 커스텀 MQTT-SN 프로토콜 전용 UDP 소켓
 static WiFiClient   wifi_client;               // PubSubClient의 TCP 연결 기반 클라이언트
 static PubSubClient mqtt_client(wifi_client);  // 표준 MQTT 클라이언트 (설정 구독 전용)
-static const int I2C_SDA_PIN = 8;
-static const int I2C_SCL_PIN = 9;
+#define BME_SDA_PIN 8
+#define BME_SCL_PIN 9
 static uint8_t bme680_i2c_address = 0x76;
 static Adafruit_BME680 bme680;
 
@@ -890,7 +890,7 @@ void setup() {
   Serial.println("║  아키텍처: MLP 신경망 추론 + FreeRTOS Mutex + MQTT-SN    ║");
   Serial.println("╚═══════════════════════════════════════════════════════════╝");
 
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.begin(BME_SDA_PIN, BME_SCL_PIN);
   if (!bme680.begin(bme680_i2c_address)) {
     bme680_i2c_address = 0x77;
     if (!bme680.begin(bme680_i2c_address)) {
@@ -906,7 +906,7 @@ void setup() {
   bme680.setIIRFilterSize(BME680_FILTER_SIZE_3);
   bme680.setGasHeater(320, 150);
   Serial.printf("[BME680] 실제 센서 초기화 완료 (SDA=%d, SCL=%d, 주소=0x%02X)\n",
-                I2C_SDA_PIN, I2C_SCL_PIN, bme680_i2c_address);
+                BME_SDA_PIN, BME_SCL_PIN, bme680_i2c_address);
 
   // ── 2단계: FreeRTOS Mutex 생성 ───────────────────────────────────────────
   // g_config 구조체에 대한 동시 접근을 보호하는 Mutex를 생성합니다.

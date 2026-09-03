@@ -56,8 +56,8 @@ static const char *TOPIC = "environmental/standard";
 // 5초 고정 발행 주기
 static const unsigned long PUBLISH_INTERVAL_MS = 5000UL;
 
-static const int I2C_SDA_PIN = 8;
-static const int I2C_SCL_PIN = 9;
+#define BME_SDA_PIN 8
+#define BME_SCL_PIN 9
 static uint8_t bme680_i2c_address = 0x76;
 static Adafruit_BME680 bme680;
 static float sensor_temp = 0.0f;
@@ -155,7 +155,7 @@ void setup() {
 
   setup_wifi();
 
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.begin(BME_SDA_PIN, BME_SCL_PIN);
   if (!bme680.begin(bme680_i2c_address)) {
     bme680_i2c_address = 0x77;
     if (!bme680.begin(bme680_i2c_address)) {
@@ -171,7 +171,7 @@ void setup() {
   bme680.setIIRFilterSize(BME680_FILTER_SIZE_3);
   bme680.setGasHeater(320, 150);
   Serial.printf("[BME680] 실제 센서 초기화 완료 (SDA=%d, SCL=%d, 주소=0x%02X)\n",
-                I2C_SDA_PIN, I2C_SCL_PIN, bme680_i2c_address);
+                BME_SDA_PIN, BME_SCL_PIN, bme680_i2c_address);
 
   client.setServer(MQTT_BROKER_IP, MQTT_BROKER_PORT);
   Serial.printf("[설정] MQTT 브로커: %s:%u | 토픽: %s\n",
