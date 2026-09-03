@@ -41,7 +41,7 @@
  * ═══════════════════════════════════════════════════════════════════════════ */
 static const char *WIFI_SSID        = "YOUR_WIFI_SSID";      // Wi-Fi SSID
 static const char *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD";   // Wi-Fi 비밀번호
-static const char *MQTT_BROKER_IP   = "192.168.0.100";        // MQTT 브로커 IP
+static const char *MQTT_BROKER_IP   = "10.61.35.14";        // MQTT 브로커 IP
 static const uint16_t MQTT_BROKER_PORT = 1883;                // 타겟 포트
 
 // Board 1 등 브로커 내 다른 보드와의 세션 충돌 방지용 고유 클라이언트 ID

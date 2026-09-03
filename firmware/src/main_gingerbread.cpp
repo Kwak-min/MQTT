@@ -84,13 +84,13 @@ static const char    *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD"; // Wi-Fi 비밀�
 
 // 커스텀 MQTT-SN (UDP) 게이트웨이 주소 및 포트
 // 라즈베리파이 5에서 실행 중인 Python 게이트웨이 서버의 수신 엔드포인트
-static const char    *UDP_SERVER_IP    = "192.168.0.100";
-static const uint16_t UDP_SERVER_PORT  = 5000;
+static const char    *UDP_SERVER_IP    = "10.61.35.14";
+static const uint16_t UDP_SERVER_PORT  = 8888;
 
 // 표준 MQTT 브로커 주소 및 포트 (Mosquitto)
 // "gingerbread/config" 토픽 설정 구독에만 사용됩니다.
 // UDP 게이트웨이와 동일한 라즈베리파이에서 실행된다고 가정합니다.
-static const char    *MQTT_BROKER_IP   = "192.168.0.100";
+static const char    *MQTT_BROKER_IP   = "10.61.35.14";
 static const uint16_t MQTT_BROKER_PORT = 1883;
 
 // ESP32가 구독하는 설정 동기화 토픽
