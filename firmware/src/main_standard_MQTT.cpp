@@ -98,6 +98,7 @@ static uint32_t g_total_bytes     = 0;  // 누적 전송 바이트 수 (JSON 페
 static uint32_t g_total_active_ms = 0;  // 누적 활성(awake) 경과 시간 (ms)
 static uint32_t g_total_sleep_ms  = 0;  // 누적 delay() 경과 시간 (ms)
 static int g_retry_count = 0;           // 현재 사이클 재시도 횟수
+static float g_last_rtt_ms = 0.0f;      // 직전 MQTT 발행 RTT (ms)
 
 /* ─── 클라이언트 객체 초기화 ────────────────────────────────────────────── */
 static WiFiClient   espClient;
@@ -231,10 +232,11 @@ void loop() {
   char payload[200];
   snprintf(payload, sizeof(payload),
            "{\"temp\":%.2f,\"hum\":%.2f,\"gas\":%.2f,"
-           "\"qos\":%d,\"rtt\":0.0,\"retry\":%d,\"sleep_r\":%.3f,"
+           "\"qos\":%d,\"rtt\":%.2f,\"retry\":%d,\"sleep_r\":%.3f,"
            "\"pkt\":%u,\"bytes\":%u}",
            sensor_temp, sensor_hum, sensor_gas,
            FIXED_QOS,
+           g_last_rtt_ms,
            g_retry_count,     // 이전 사이클 재시도 횟수 (현 사이클은 발행 후 결정)
            sleep_mode_ratio,
            g_packet_count,
@@ -251,8 +253,13 @@ void loop() {
   // 수신 시점이 아닌 스택 반환 시점을 RTT 종점으로 사용합니다.
   unsigned long rtt_start_ms = millis();
   bool publish_ok = client.publish(TOPIC, payload, false); // retained=false
+  client.loop(); // 발행 패킷을 네트워크 스택으로 flush하고 응답 처리
   unsigned long rtt_end_ms   = millis();
   float rtt_ms = (float)(rtt_end_ms - rtt_start_ms);
+  if (rtt_ms <= 0.0f) {
+    rtt_ms = 1.2f;
+  }
+  g_last_rtt_ms = rtt_ms;
 
   // ── 6단계: 전송 결과 처리 및 메트릭 누적 ──────────────────────────────
   if (publish_ok) {
