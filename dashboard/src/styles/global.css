@@ -1,0 +1,174 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--ink-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--series-gingerbread);
+}
+a:hover {
+  color: var(--qos-2);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 레이아웃 ---- */
+.page {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 24px 40px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-grid);
+}
+
+.grid {
+  display: grid;
+  gap: var(--gap-grid);
+}
+.grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid--main { grid-template-columns: minmax(0, 2.05fr) minmax(0, 1fr); align-items: start; }
+.stack { display: flex; flex-direction: column; gap: var(--gap-grid); }
+.row { display: flex; align-items: center; gap: 8px; }
+.spacer { flex-grow: 1; }
+
+@media (max-width: 1200px) {
+  .grid--main { grid-template-columns: minmax(0, 1fr); }
+  .grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .page { padding: 20px 24px 40px; }
+}
+@media (max-width: 720px) {
+  .grid--4,
+  .grid--2 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- 카드 ---- */
+.card {
+  background: var(--surface-card);
+  border: 1px solid var(--line-card);
+  border-radius: var(--radius-card);
+  padding: var(--pad-card);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.card__title { font: var(--text-title); margin: 0; }
+.card__title small { color: var(--ink-muted); font-weight: 400; }
+.card__meta { font: var(--text-caption); color: var(--ink-muted); }
+/* 카드가 옆 카드에 맞춰 늘어날 때, 차트가 남는 높이를 채웁니다.
+   자식 SVG는 absolute라 부모 높이에 영향을 주지 않습니다(리사이즈 루프 방지). */
+.chart-fill {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 180px;
+}
+.chart-fill > svg {
+  position: absolute;
+  inset: 0;
+}
+
+.card__foot {
+  border-top: 1px solid var(--line-grid);
+  padding-top: 11px;
+  font: var(--text-body);
+  color: var(--ink-secondary);
+}
+
+.label {
+  font: var(--text-label);
+  letter-spacing: var(--letter-label);
+  color: var(--ink-muted);
+  text-transform: none;
+}
+
+/* ---- 컨트롤 ---- */
+.btn {
+  font: 500 12.5px/1 var(--font-sans);
+  color: var(--ink-primary);
+  background: var(--surface-card);
+  border: 1px solid var(--line-control);
+  border-radius: var(--radius-control);
+  padding: 8px 13px;
+  cursor: pointer;
+}
+.btn:hover { background: var(--surface-subtle); }
+
+.segmented {
+  display: inline-flex;
+  background: var(--surface-subtle);
+  border-radius: var(--radius-control);
+  padding: 3px;
+  gap: 2px;
+}
+.segmented button {
+  font: 500 11.5px/1 var(--font-sans);
+  color: var(--ink-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-chip);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.segmented button[aria-pressed='true'] {
+  background: var(--qos-2);
+  color: var(--ink-inverse);
+  font-weight: 600;
+}
+
+.qos-chip {
+  display: inline-block;
+  font: 600 11px/1 var(--font-sans);
+  padding: 3px 7px;
+  border-radius: var(--radius-chip);
+}
+
+/* ---- 상태 ---- */
+.state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 120px;
+  text-align: center;
+  color: var(--ink-muted);
+  font: var(--text-body);
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-track) 25%, var(--line-hairline) 50%, var(--surface-track) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 6px;
+}
+@keyframes shimmer {
+  to { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
