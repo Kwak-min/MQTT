@@ -1,0 +1,71 @@
+/* ---------------------------------------------------------------------------
+ * Gingerbread 디자인 토큰 — 시안(캔버스)의 05 토큰 시트와 1:1 대응합니다.
+ * 값을 바꾸려면 여기만 고치세요. 컴포넌트에는 hex를 직접 쓰지 않습니다.
+ * ------------------------------------------------------------------------- */
+:root {
+  /* 비교 시리즈 — 전 화면에서 고정. 색맹 시뮬레이션 ΔE 24.7 */
+  --series-gingerbread: #2a78d6;
+  --series-legacy: #eb6834;
+
+  /* QoS 순서형 램프 — 한 색의 명도 3단계 (초록/노랑/빨강 금지) */
+  --qos-0: #86b6ef;
+  --qos-1: #3987e5;
+  --qos-2: #184f95;
+  --qos-0-ink: #0b0b0b;
+  --qos-1-ink: #ffffff;
+  --qos-2-ink: #ffffff;
+
+  /* 상태 — 항상 아이콘 + 라벨과 함께. 색 단독 사용 금지 */
+  --status-normal: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  /* 밝은 표면에서 3:1 대비를 확보하기 위한 아이콘/텍스트용 변형 */
+  --status-warning-ink: #b0790f;
+  --status-serious-ink: #c2653a;
+  --status-critical-ink: #a8332a;
+  --status-positive-ink: #006300;
+
+  /* 표면 */
+  --surface-page: #efefec;
+  --surface-card: #fcfcfb;
+  --surface-track: #eceae4;
+  --surface-subtle: #f2f1ed;
+  --surface-selected: #eceae4;
+
+  /* 잉크 */
+  --ink-primary: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #898781;
+  --ink-faint: #a9a79f;
+  --ink-inverse: #ffffff;
+
+  /* 선 */
+  --line-grid: #e1e0d9;
+  --line-axis: #c3c2b7;
+  --line-hairline: #f0efec;
+  --line-card: rgba(11, 11, 11, 0.1);
+  --line-control: rgba(11, 11, 11, 0.14);
+  --line-threshold: #0b0b0b;
+
+  /* 타이포 */
+  --font-sans: 'IBM Plex Sans KR', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --text-metric: 600 38px/1 var(--font-sans);
+  --text-title: 600 16px/1.3 var(--font-sans);
+  --text-subtitle: 600 15px/1.3 var(--font-sans);
+  --text-body: 400 12.5px/1.55 var(--font-sans);
+  --text-body-strong: 500 13px/1.5 var(--font-sans);
+  --text-label: 600 11px/1.2 var(--font-sans);
+  --text-caption: 400 11.5px/1.4 var(--font-sans);
+  --letter-label: 0.08em;
+
+  /* 간격 · 형태 */
+  --radius-card: 10px;
+  --radius-control: 6px;
+  --radius-chip: 4px;
+  --gap-grid: 16px;
+  --pad-card: 20px 22px;
+  --page-max: 1440px;
+}
