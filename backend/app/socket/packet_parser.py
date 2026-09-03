@@ -160,6 +160,13 @@ def _parse_publish(raw: bytes, addr: Addr) -> PublishPacket:
         payload_bytes = payload_bytes[:-1]
     payload_raw = payload_bytes.decode("utf-8", errors="ignore").rstrip("\x00")
 
+    # UDP datagram 뒤에 남은 바이너리 패딩/쓰레기 바이트가 있어도
+    # 첫 JSON 객체만 추출해 센서 필드 파싱이 실패하지 않도록 합니다.
+    json_start = payload_raw.find("{")
+    json_end = payload_raw.rfind("}")
+    if json_start >= 0 and json_end >= json_start:
+        payload_raw = payload_raw[json_start:json_end + 1]
+
     # Attempt JSON parse; keep raw string if it fails
     payload_dict = None
     try:

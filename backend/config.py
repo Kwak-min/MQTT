@@ -15,6 +15,10 @@ import os
 
 UDP_HOST = "0.0.0.0"               # 사용 가능한 모든 인터페이스에서 수신 대기
 
+# Standard MQTT Board 2 브로커
+MQTT_BROKER_HOST = "10.61.35.14"
+MQTT_BROKER_PORT = 1883
+
 # Node B  ──  Gingerbread (저전력 맞춤형 UDP 프로토콜)
 GINGERBREAD_PORT = 5000
 

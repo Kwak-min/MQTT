@@ -257,6 +257,11 @@ static bool read_bme680() {
   return bme680.performReading();
 }
 
+static size_t publish_packet_size(const PublishPacket &packet) {
+  return sizeof(Header) + sizeof(packet.msg_id) + sizeof(packet.qos)
+       + sizeof(packet.topic_id) + strlen(packet.payload) + 1;
+}
+
 /*
  * Wi-Fi RSSI 측정 함수 (dBm)
  * WiFi.RSSI()가 반환하는 실시간 값 사용
@@ -1114,7 +1119,7 @@ void loop() {
     // RTT: QoS 0는 응답이 없으므로 단방향 전송 시간만 근사합니다.
     // ══════════════════════════════════════════════════════════════════════
     udp.beginPacket(UDP_SERVER_IP, UDP_SERVER_PORT);
-    udp.write((uint8_t *)&pub_pkt, sizeof(pub_pkt));
+    udp.write((uint8_t *)&pub_pkt, publish_packet_size(pub_pkt));
     udp.endPacket();
     // QoS 0: 확인응답 없음 → RTT는 전송 완료 직후로 측정 (단방향 전송 시간)
     rtt_ms = (float)(micros() - rtt_start_us) / 1000.0f;
@@ -1132,7 +1137,7 @@ void loop() {
     while (retry_count <= max_retries) {
       // PUBLISH 패킷 UDP 전송
       udp.beginPacket(UDP_SERVER_IP, UDP_SERVER_PORT);
-      udp.write((uint8_t *)&pub_pkt, sizeof(pub_pkt));
+      udp.write((uint8_t *)&pub_pkt, publish_packet_size(pub_pkt));
       udp.endPacket();
 
       // PUBACK 수신 대기 (최대 2.0초 타임아웃)
@@ -1164,7 +1169,7 @@ void loop() {
     // ── QoS 2 단계 1: PUBLISH 전송 및 PUBREC 수신 대기 ──────────────────
     while (retry_count <= max_retries) {
       udp.beginPacket(UDP_SERVER_IP, UDP_SERVER_PORT);
-      udp.write((uint8_t *)&pub_pkt, sizeof(pub_pkt));
+      udp.write((uint8_t *)&pub_pkt, publish_packet_size(pub_pkt));
       udp.endPacket();
 
       // PUBREC 수신 대기 (최대 2.0초)
@@ -1286,7 +1291,7 @@ void loop() {
              g_packet_count, g_total_bytes);
 
     udp.beginPacket(UDP_SERVER_IP, UDP_SERVER_PORT);
-    udp.write((uint8_t *)&telemetry_pkt, sizeof(telemetry_pkt));
+    udp.write((uint8_t *)&telemetry_pkt, publish_packet_size(telemetry_pkt));
     udp.endPacket();
     Serial.printf("[텔레메트리] 실측 메트릭 전송 완료 (MsgID=%u, topic=2)\n"
                   "  rtt=%.2f ms | retry=%d | sleep_r=%.4f | pkt=%u | bytes=%u\n",

@@ -47,7 +47,13 @@ logger = logging.getLogger("main")
 # ─────────────────────────────────────────────────────────────────────────────
 # 임포트 (sys.path 수정 후)
 # ─────────────────────────────────────────────────────────────────────────────
-from config import UDP_HOST, GINGERBREAD_PORT, POWER_PORT
+from config import (
+    UDP_HOST,
+    GINGERBREAD_PORT,
+    POWER_PORT,
+    MQTT_BROKER_HOST,
+    MQTT_BROKER_PORT,
+)
 
 from app.services.session_service   import SessionService
 from app.services.telemetry_service import TelemetryService
@@ -57,6 +63,7 @@ from app.services.config_service    import ConfigService
 from app.services.control_service   import ControlService
 from app.socket.udp_listener        import GingerbreadListener, PowerListener
 from app.models.packet              import ConnectPacket, DisconnectPacket, PublishPacket, PowerPacket
+from app.services.standard_mqtt_listener import StandardMqttListener
 
 
 def main() -> None:
@@ -105,6 +112,13 @@ def main() -> None:
         """모든 전력 MCU 스트리밍 패킷에 대해 호출됩니다."""
         telemetry_svc.record_power_telemetry(packet)
 
+    def on_standard_telemetry(packet: PublishPacket) -> None:
+        """Board 2 MQTT 텔레메트리를 기존 환경 CSV 경로로 전달합니다."""
+        telemetry_svc.record_env_telemetry(
+            packet,
+            client_id="ESP32-Standard-MQTT",
+        )
+
     # ──────────────────────────────────────────────────────────────────────────
     # 3. UDP 리스너
     # ──────────────────────────────────────────────────────────────────────────
@@ -122,8 +136,15 @@ def main() -> None:
         on_power=on_power,
     )
 
+    standard_mqtt_listener = StandardMqttListener(
+        host=MQTT_BROKER_HOST,
+        port=MQTT_BROKER_PORT,
+        on_telemetry=on_standard_telemetry,
+    )
+
     gingerbread_listener.start()
     power_listener.start()
+    standard_mqtt_listener.start()
 
     logger.info("[Main] Listeners started.")
     logger.info("[Main]   -> Gingerbread  (Node B)    : UDP %s:%d", UDP_HOST, GINGERBREAD_PORT)
@@ -153,6 +174,7 @@ def main() -> None:
     finally:
         gingerbread_listener.stop()
         power_listener.stop()
+        standard_mqtt_listener.stop()
         # ConfigService 종료 — MQTT 클라이언트 연결을 안전하게 닫습니다
         config_svc.shutdown()
         logger.info("[Main] All listeners stopped. Goodbye.")
