@@ -3,3 +3,6 @@ dist
 .env
 .env.local
 *.tsbuildinfo
+
+# 상위 저장소의 Python용 `lib/` 규칙이 src/lib 를 삼키는 것을 방지
+!src/lib/
