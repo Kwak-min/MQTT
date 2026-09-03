@@ -89,7 +89,7 @@ static const char    *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD";  // Wi-Fi 비밀�
 
 /* UDP 게이트웨이 엔드포인트 (라즈베리파이 5 전력 모니터 수신 서버)
  * 전력 데이터 전용 포트를 별도로 사용하여 Board 1/2의 UDP 트래픽과 충돌을 방지합니다. */
-static const char    *UDP_GATEWAY_IP   = "192.168.0.100";  // 게이트웨이 IP 주소
+static const char    *UDP_GATEWAY_IP   = "10.61.35.14";  // 게이트웨이 IP 주소
 static const uint16_t UDP_GATEWAY_PORT = 5001;             // 전력 모니터 전용 UDP 포트
 
 /* Board 3 식별자: UDP 페이로드의 "client_id" 필드에 포함됩니다.

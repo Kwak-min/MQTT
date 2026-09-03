@@ -153,7 +153,12 @@ def _parse_publish(raw: bytes, addr: Addr) -> PublishPacket:
     # <H    → topic_id(uint16)
     _, _, msg_id, qos, topic_id = struct.unpack_from("<BBHBH", raw, 0)
 
-    payload_raw = raw[PUBLISH_MIN_LEN:].decode("utf-8", errors="ignore").rstrip("\x00")
+    # PublishPacket의 마지막 1바이트는 비트필드 메타데이터입니다.
+    # 이를 JSON에 포함하면 메타데이터 값이 0이 아닌 경우 파싱이 실패합니다.
+    payload_bytes = raw[PUBLISH_MIN_LEN:]
+    if len(payload_bytes) >= 129:
+        payload_bytes = payload_bytes[:-1]
+    payload_raw = payload_bytes.decode("utf-8", errors="ignore").rstrip("\x00")
 
     # Attempt JSON parse; keep raw string if it fails
     payload_dict = None

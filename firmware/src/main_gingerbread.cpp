@@ -85,7 +85,7 @@ static const char    *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD"; // Wi-Fi 비밀�
 // 커스텀 MQTT-SN (UDP) 게이트웨이 주소 및 포트
 // 라즈베리파이 5에서 실행 중인 Python 게이트웨이 서버의 수신 엔드포인트
 static const char    *UDP_SERVER_IP    = "10.61.35.14";
-static const uint16_t UDP_SERVER_PORT  = 8888;
+static const uint16_t UDP_SERVER_PORT  = 5000;
 
 // 표준 MQTT 브로커 주소 및 포트 (Mosquitto)
 // "gingerbread/config" 토픽 설정 구독에만 사용됩니다.
@@ -1059,7 +1059,7 @@ void loop() {
   pub_pkt.network_status  = net_status;        // 네트워크 상태 (게이트웨이 모니터링용)
   pub_pkt.data_urgency    = (urgency > 0) ? 1 : 0; // 긴급도 플래그 (게이트웨이 알람용)
 
-  // JSON 페이로드 직렬화 (128바이트 PublishPacket.payload 버퍼에 직접 작성)
+  // JSON 페이로드 직렬화 (256바이트 PublishPacket.payload 버퍼에 직접 작성)
   // [2026-06 확장] RTT, retry_count, sleep_mode_ratio 필드를 페이로드에 포함
   // 게이트웨이(Python)에서 rtt_ms, retry, sleep_r 키로 파싱합니다.
   //
