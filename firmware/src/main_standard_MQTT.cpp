@@ -33,6 +33,8 @@
 #include <WiFiClient.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Wire.h>
+#include <Adafruit_BME680.h>
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * [섹션 A] 네트워크 자격증명 및 MQTT 브로커 엔드포인트
@@ -49,16 +51,29 @@ static const char *CLIENT_ID = "ESP32-Standard-MQTT";
 static const char *TOPIC = "environmental/standard";
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * [섹션 B] 전송 주기 및 모의 센서 데이터
+ * [섹션 B] 전송 주기 및 BME680 센서
  * ═══════════════════════════════════════════════════════════════════════════ */
 // 5초 고정 발행 주기
 static const unsigned long PUBLISH_INTERVAL_MS = 5000UL;
 
-// Board 1 구조와 동일한 모의 환경 데이터 (비교 공정성 확보)
-static float mock_temp = 25.4f;
-static float mock_hum  = 50.0f;
-static float mock_gas  = 12.5f;
+static const int I2C_SDA_PIN = 8;
+static const int I2C_SCL_PIN = 9;
+static uint8_t bme680_i2c_address = 0x76;
+static Adafruit_BME680 bme680;
+static float sensor_temp = 0.0f;
+static float sensor_hum  = 0.0f;
+static float sensor_gas  = 0.0f;
 static const int FIXED_QOS = 1; // Board 2는 항상 QoS 1 고정
+
+static bool read_bme680() {
+  if (!bme680.performReading()) {
+    return false;
+  }
+  sensor_temp = bme680.temperature;
+  sensor_hum  = bme680.humidity;
+  sensor_gas  = bme680.gas_resistance / 1000.0f;
+  return true;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * [섹션 C] 소프트웨어 정의 전력 추정 성능 메트릭 전역 카운터
@@ -140,6 +155,24 @@ void setup() {
 
   setup_wifi();
 
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  if (!bme680.begin(bme680_i2c_address)) {
+    bme680_i2c_address = 0x77;
+    if (!bme680.begin(bme680_i2c_address)) {
+      Serial.println("[BME680] 센서를 찾을 수 없습니다 (주소 0x76/0x77, 배선 확인 필요)");
+      while (true) {
+        delay(1000);
+      }
+    }
+  }
+  bme680.setTemperatureOversampling(BME680_OS_8X);
+  bme680.setHumidityOversampling(BME680_OS_2X);
+  bme680.setPressureOversampling(BME680_OS_4X);
+  bme680.setIIRFilterSize(BME680_FILTER_SIZE_3);
+  bme680.setGasHeater(320, 150);
+  Serial.printf("[BME680] 실제 센서 초기화 완료 (SDA=%d, SCL=%d, 주소=0x%02X)\n",
+                I2C_SDA_PIN, I2C_SCL_PIN, bme680_i2c_address);
+
   client.setServer(MQTT_BROKER_IP, MQTT_BROKER_PORT);
   Serial.printf("[설정] MQTT 브로커: %s:%u | 토픽: %s\n",
                 MQTT_BROKER_IP, MQTT_BROKER_PORT, TOPIC);
@@ -178,6 +211,11 @@ void loop() {
   Serial.printf("[루프] ▶ 표준 MQTT 발행 사이클 시작 (주기: %lu ms)\n",
                 PUBLISH_INTERVAL_MS);
 
+  if (!read_bme680()) {
+    Serial.println("[BME680] 측정 실패 — 이번 전송을 건너뜁니다");
+    return;
+  }
+
   // ── 3단계: sleep_mode_ratio 계산 ──────────────────────────────────────
   // Board 2는 실제 Sleep 모드를 사용하지 않고 client.loop()로 radio를 유지합니다.
   // PUBLISH_INTERVAL 중 실제 sleep 없이 대기하므로 sleep_ratio ≈ 0에 수렴합니다.
@@ -195,7 +233,7 @@ void loop() {
            "{\"temp\":%.2f,\"hum\":%.2f,\"gas\":%.2f,"
            "\"qos\":%d,\"rtt\":0.0,\"retry\":%d,\"sleep_r\":%.3f,"
            "\"pkt\":%u,\"bytes\":%u}",
-           mock_temp, mock_hum, mock_gas,
+           sensor_temp, sensor_hum, sensor_gas,
            FIXED_QOS,
            g_retry_count,     // 이전 사이클 재시도 횟수 (현 사이클은 발행 후 결정)
            sleep_mode_ratio,
@@ -236,11 +274,7 @@ void loop() {
                   g_retry_count);
   }
 
-  // ── 7단계: 모의 데이터 소폭 변경 (다음 주기를 위함) ───────────────────
-  mock_temp += 0.1f;
-  if (mock_temp > 30.0f) mock_temp = 25.4f;
-
-  // ── 8단계: Sleep 시간 누적 ────────────────────────────────────────────
+  // ── 7단계: Sleep 시간 누적 ────────────────────────────────────────────
   // Board 2는 실제 Sleep 없이 client.loop() 폴링으로 대기하지만,
   // 다음 PUBLISH_INTERVAL까지의 대기 시간을 "passive sleep"으로 기록합니다.
   // 이를 통해 Board 1과의 sleep_mode_ratio를 일관된 방식으로 비교할 수 있습니다.

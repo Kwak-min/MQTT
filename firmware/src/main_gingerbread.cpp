@@ -68,6 +68,8 @@
 #include <freertos/FreeRTOS.h>  // FreeRTOS 커널 기본 헤더
 #include <freertos/semphr.h>    // FreeRTOS Mutex (SemaphoreHandle_t) 지원
 #include <math.h>               // expf() 함수 (Sigmoid 활성화 함수 연산용)
+#include <Wire.h>               // BME680 I2C 통신
+#include <Adafruit_BME680.h>    // BME680 환경 센서 드라이버
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * [섹션 A] 네트워크 자격증명 및 서버 엔드포인트 설정
@@ -193,6 +195,10 @@ struct SensorInputs {
 static WiFiUDP      udp;                       // 커스텀 MQTT-SN 프로토콜 전용 UDP 소켓
 static WiFiClient   wifi_client;               // PubSubClient의 TCP 연결 기반 클라이언트
 static PubSubClient mqtt_client(wifi_client);  // 표준 MQTT 클라이언트 (설정 구독 전용)
+static const int I2C_SDA_PIN = 8;
+static const int I2C_SCL_PIN = 9;
+static uint8_t bme680_i2c_address = 0x76;
+static Adafruit_BME680 bme680;
 
 // 커스텀 MQTT-SN 메시지 ID 카운터 (단조 증가, 오버플로 시 자연 순환)
 static uint16_t current_msg_id = 1;
@@ -225,8 +231,7 @@ static uint32_t g_total_sleep_ms  = 0;  // 누적 Sleep/delay 경과 시간 (ms)
  * 실제 구현: return bme.temperature;
  */
 static float read_temperature() {
-  // 실제 배포 시 BME680 드라이버 값으로 교체
-  return 32.5f + (float)(random(-20, 20)) / 10.0f;
+  return bme680.temperature;
 }
 
 /*
@@ -235,8 +240,7 @@ static float read_temperature() {
  * 실제 구현: return bme.humidity;
  */
 static float read_humidity() {
-  // 실제 배포 시 BME680 드라이버 값으로 교체
-  return 45.2f + (float)(random(-50, 50)) / 10.0f;
+  return bme680.humidity;
 }
 
 /*
@@ -246,8 +250,11 @@ static float read_humidity() {
  * 실제 구현: return bme.gas_resistance / 1000.0f;  // Ω → kΩ 변환
  */
 static float read_gas_resistance_kohm() {
-  // 실제 배포 시 BME680 드라이버 값으로 교체
-  return 18.5f + (float)(random(-40, 40)) / 10.0f;
+  return bme680.gas_resistance / 1000.0f;
+}
+
+static bool read_bme680() {
+  return bme680.performReading();
 }
 
 /*
@@ -649,6 +656,9 @@ static SensorInputs preprocess_sensor_inputs() {
   SensorInputs inputs;
 
   // ── 공통 센서 데이터 수집 (전원 모드와 무관하게 항상 실행) ──────────────
+  if (!read_bme680()) {
+    Serial.println("[BME680] 측정 실패");
+  }
   inputs.temp     = read_temperature();         // BME680 온도 (°C)
   inputs.hum      = read_humidity();            // BME680 습도 (%)
   inputs.gas_kohm = read_gas_resistance_kohm(); // BME680 가스 저항 (kΩ)
@@ -879,6 +889,24 @@ void setup() {
   Serial.println("║  Board 1: Gingerbread — TinyML MLP 엣지 AI 펌웨어 부팅   ║");
   Serial.println("║  아키텍처: MLP 신경망 추론 + FreeRTOS Mutex + MQTT-SN    ║");
   Serial.println("╚═══════════════════════════════════════════════════════════╝");
+
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  if (!bme680.begin(bme680_i2c_address)) {
+    bme680_i2c_address = 0x77;
+    if (!bme680.begin(bme680_i2c_address)) {
+      Serial.println("[BME680] 센서를 찾을 수 없습니다 (주소 0x76/0x77, 배선 확인 필요)");
+      while (true) {
+        delay(1000);
+      }
+    }
+  }
+  bme680.setTemperatureOversampling(BME680_OS_8X);
+  bme680.setHumidityOversampling(BME680_OS_2X);
+  bme680.setPressureOversampling(BME680_OS_4X);
+  bme680.setIIRFilterSize(BME680_FILTER_SIZE_3);
+  bme680.setGasHeater(320, 150);
+  Serial.printf("[BME680] 실제 센서 초기화 완료 (SDA=%d, SCL=%d, 주소=0x%02X)\n",
+                I2C_SDA_PIN, I2C_SCL_PIN, bme680_i2c_address);
 
   // ── 2단계: FreeRTOS Mutex 생성 ───────────────────────────────────────────
   // g_config 구조체에 대한 동시 접근을 보호하는 Mutex를 생성합니다.
