@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env
+.env.*.local
+
+# 상위 저장소가 Python 빌드 산출물 lib/ 를 무시하더라도
+# 프론트엔드 소스인 src/lib/ 는 항상 추적되도록 예외 처리
+!src/lib/
