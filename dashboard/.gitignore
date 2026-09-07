@@ -1,8 +1,10 @@
-node_modules
-dist
+node_modules/
+dist/
+dist-ssr/
+*.local
 .env
-.env.local
-*.tsbuildinfo
+.env.*.local
 
-# 상위 저장소의 Python용 `lib/` 규칙이 src/lib 를 삼키는 것을 방지
+# 상위 저장소가 Python 빌드 산출물 lib/ 를 무시하더라도
+# 프론트엔드 소스인 src/lib/ 는 항상 추적되도록 예외 처리
 !src/lib/

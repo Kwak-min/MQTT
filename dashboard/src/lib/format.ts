@@ -1,84 +1,94 @@
-import type { Baseline, QosLevel, StatusLevel } from '@/types/domain';
+import type { DeviceState, FirmwareVariant } from "./dataSource/types";
 
-export function formatNumber(value: number, precision: number): string {
-  return value.toLocaleString('ko-KR', {
-    minimumFractionDigits: precision,
-    maximumFractionDigits: precision,
-  });
+/** 가스 저항: 전송 단위는 Ω, 표시 단위는 kΩ (docs/API-CONTRACT.md 합의 필요 항목) */
+export function formatGasResistance(ohm: number): string {
+  return `${(ohm / 1000).toFixed(1)} kΩ`;
 }
 
-/** 음수 기호를 U+2212로 바꿔 하이픈보다 또렷하게 보이게 합니다. */
-export function formatSigned(value: number, precision: number): string {
-  return formatNumber(value, precision).replace(/^-/, '−');
+export function formatTemperature(celsius: number): string {
+  return `${celsius.toFixed(1)}°C`;
 }
 
-export function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+export function formatHumidity(pct: number): string {
+  return `${pct.toFixed(1)}%`;
 }
 
-export function formatClock(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit' });
+export function formatPressure(hpa: number): string {
+  return `${hpa.toFixed(1)} hPa`;
+}
+
+export function formatVoltage(v: number): string {
+  return `${v.toFixed(3)} V`;
+}
+
+export function formatCurrent(ma: number): string {
+  return `${ma.toFixed(1)} mA`;
+}
+
+export function formatPower(mw: number): string {
+  return `${mw.toFixed(0)} mW`;
+}
+
+/** 1회 통신 에너지 표시 (mJ 단위, 소수 1자리) */
+export function formatEnergyMj(mj: number): string {
+  return `${mj.toFixed(1)} mJ`;
+}
+
+/** 누적 에너지 등 큰 값은 mWh 로 환산 (1 mWh = 3600 mJ) */
+export function formatEnergyMwh(mj: number): string {
+  return `${(mj / 3600).toFixed(2)} mWh`;
 }
 
 export function formatUptime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  return [h, m, s].map((n) => String(n).padStart(2, '0')).join(':');
+  if (h > 0) return `${h}시간 ${m}분`;
+  return `${m}분`;
 }
 
-export function relativeTime(iso: string, now = Date.now()): string {
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '';
-  const diff = Math.max(0, Math.round((now - t) / 1000));
-  if (diff < 5) return '방금';
-  if (diff < 60) return `${diff}초 전`;
-  if (diff < 3600) return `${Math.round(diff / 60)}분 전`;
-  return `${Math.round(diff / 3600)}시간 전`;
+/** ISO 8601 + 오프셋 문자열을 화면용 상대/절대 시간으로 변환 */
+export function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 
-/** 베이스라인 대비 개선폭. %p인지 %인지 단위에 따라 구분합니다. */
-export function baselineDelta(
-  value: number,
-  unit: string,
-  baseline: Baseline,
-): { text: string; improved: boolean } {
-  const isPercentPoint = unit === '%';
-  const raw = isPercentPoint
-    ? value - baseline.value
-    : ((value - baseline.value) / baseline.value) * 100;
-  const improved = baseline.trend === 'higher-is-better' ? raw > 0 : raw < 0;
-  const arrow = raw > 0 ? '▲' : '▼';
-  const magnitude = Math.abs(raw);
-  const suffix = isPercentPoint ? '%p' : '%';
-  return { text: `${arrow} ${formatNumber(magnitude, 1)}${suffix}`, improved };
+export function formatRelativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffS = Math.round(diffMs / 1000);
+  if (diffS < 5) return "방금";
+  if (diffS < 60) return `${diffS}초 전`;
+  const diffM = Math.round(diffS / 60);
+  if (diffM < 60) return `${diffM}분 전`;
+  const diffH = Math.round(diffM / 60);
+  if (diffH < 24) return `${diffH}시간 전`;
+  return `${Math.round(diffH / 24)}일 전`;
 }
 
-export const qosVar = (qos: QosLevel) => `var(--qos-${qos})`;
-export const qosInkVar = (qos: QosLevel) => `var(--qos-${qos}-ink)`;
+export const FIRMWARE_LABEL: Record<FirmwareVariant, string> = {
+  standard_mqtt: "Standard MQTT",
+  monitor: "Monitor",
+  gingerbread: "Gingerbread",
+};
 
-export const statusVar = (level: StatusLevel) =>
-  level === 'normal'
-    ? 'var(--status-normal)'
-    : level === 'warning'
-      ? 'var(--status-warning-ink)'
-      : level === 'serious'
-        ? 'var(--status-serious-ink)'
-        : 'var(--status-critical-ink)';
+export const FIRMWARE_COLOR: Record<FirmwareVariant, string> = {
+  standard_mqtt: "var(--signal-teal)",
+  monitor: "var(--signal-amber)",
+  gingerbread: "var(--signal-violet)",
+};
 
-/** 값을 0..1 비율로. 축을 벗어나면 잘라냅니다. */
-export function ratio(value: number, min: number, max: number): number {
-  if (max === min) return 0;
-  return Math.min(1, Math.max(0, (value - min) / (max - min)));
-}
+export const DEVICE_STATE_LABEL: Record<DeviceState, string> = {
+  active: "ACTIVE",
+  asleep: "ASLEEP",
+};
 
-export function isThresholdViolated(
-  value: number,
-  threshold: { value: number; direction: 'max' | 'min' },
-): boolean {
-  return threshold.direction === 'max' ? value > threshold.value : value < threshold.value;
-}
+export const DEVICE_STATE_COLOR: Record<DeviceState, string> = {
+  active: "var(--signal-green)",
+  asleep: "var(--text-tertiary)",
+};
