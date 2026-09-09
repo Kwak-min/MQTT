@@ -1,1 +1,7 @@
 timestamp,client_id,qos,rtt_ms,retry_count,sleep_mode_ratio,estimated_energy_mwh,packet_count,total_bytes
+2026-09-09T14:30:00,Gingerbread_NodeB,1,12.5,0,0.8,0.000125,10,1200
+2026-09-09T14:30:05,Standard_NodeA,1,45.2,0,0.0,0.000512,10,2400
+2026-09-09T14:30:10,Gingerbread_NodeB,1,11.8,0,0.8,0.000118,20,2400
+2026-09-09T14:30:15,Standard_NodeA,1,44.8,0,0.0,0.000508,20,4800
+2026-09-09T14:30:20,Gingerbread_NodeB,1,12.1,0,0.8,0.000121,30,3600
+2026-09-09T14:30:25,Standard_NodeA,1,46.0,0,0.0,0.000520,30,7200

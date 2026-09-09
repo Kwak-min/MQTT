@@ -21,3 +21,7 @@ paho-mqtt>=1.6.1,<2.0
 
 # WebSocket 지원 — 대시보드 실시간 텔레메트리 스트리밍 (WS /ws/telemetry)
 flask-sock>=0.7.0
+
+# Streamlit IoT 성능 비교 대시보드
+streamlit>=1.30.0
+
