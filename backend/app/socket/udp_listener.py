@@ -267,10 +267,10 @@ class PowerListener(UDPListener):
     """
     [DEPRECATED — 2026-06]
     ESP32-C3 INA219 하드웨어 전력 모니터 Board 3이 폐지되면서
-    이 리스너도 더 이상 다운되지 않습니다.
+    이 리스너도 더 이상 사용되지 않습니다.
 
     대체 전력 정보 흐름:
-      Board 1 (ESP32-S3) 편웨어가 핸드셰이크 후 RTT/retry 실쪻측값을
+      Board 1 (ESP32-S3) 펌웨어가 핸드셰이크 후 RTT/retry 실측값을
       topic_id=2 PUBLISH 패킷으로 전송 → GingerbreadListener.on_telemetry
       → telemetry_service._estimate_and_record_power()
       → IEEE Access 2024 공식으로 소비 에너지 실시간 추정

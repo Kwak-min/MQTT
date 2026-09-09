@@ -64,5 +64,5 @@ MSG_PUBCOMP    = 7   # QoS 2 단계 3 (서버 → 클라이언트: "완료(compl
 # 패킷 포맷 상수
 # ──────────────────────────────────────────────────────────────────────────────
 
-CONNECT_MIN_LEN  = 18   # 2바이트 헤더 + 16바이트 client_id
+CONNECT_MIN_LEN  = 20   # 2바이트 헤더 + 16바이트 client_id + 2바이트 sleep_duration (protocol.h ConnectPacket)
 PUBLISH_MIN_LEN  = 7    # 2바이트 헤더 + 2바이트 msg_id + 1바이트 qos + 2바이트 topic_id

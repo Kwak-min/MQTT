@@ -6,7 +6,7 @@ backend/app/services/control_service.py
 protocol.h의 PublishPacket 바이너리 규격(#pragma pack(push, 1))에 맞춰
 리틀 엔디안으로 바이트를 패킹한 후 지정된 IP/Port로 UDP 전송합니다.
 
-다운링크 패킷 레이아웃 (136 bytes, little-endian):
+다운링크 패킷 레이아웃 (264 bytes, little-endian):
   Offset  Size   Field           Description
   ──────  ─────  ──────────────  ────────────────────────────────
   0       1      length          전체 패킷 바이트 수 (uint8)
@@ -14,10 +14,10 @@ protocol.h의 PublishPacket 바이너리 규격(#pragma pack(push, 1))에 맞춰
   2       2      msg_id          메시지 ID (uint16, LE)
   4       1      qos             QoS 레벨 (uint8: 0, 1, 2)
   5       2      topic_id        제어 토픽 = 0xFFFF (uint16, LE)
-  7       128    payload         JSON + 널패딩 (char[128])
-  135     1      meta            비트필드 (uint8, 0x00)
+  7       256    payload         JSON + 널패딩 (char[256])  ← protocol.h 확장 반영
+  263     1      meta            비트필드 (uint8, 0x00)
   ──────────────────────────────────────────────────────────────
-  Total: 136 bytes (PublishPacket #pragma pack(1) 규격 일치)
+  Total: 264 bytes (PublishPacket #pragma pack(1) 규격 일치)
 
 의존성:
   이 서비스는 외부 상태에 의존하지 않는 순수 네트워크 유틸리티입니다.
@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _DOWNLINK_TOPIC_ID: int = 0xFFFF       # 다운링크 제어 전용 토픽 ID
-_PAYLOAD_SIZE:      int = 128          # char payload[128]
-_PACKET_TOTAL_LEN:  int = 136          # Header(2) + msg_id(2) + qos(1) + topic_id(2) + payload(128) + meta(1)
+_PAYLOAD_SIZE:      int = 256          # char payload[256]  ← protocol.h PublishPacket 기준
+_PACKET_TOTAL_LEN:  int = 264          # Header(2) + msg_id(2) + qos(1) + topic_id(2) + payload(256) + meta(1)
 _META_DEFAULT:      int = 0x00         # 비트필드 기본값 (network_status=GOOD, data_urgency=NORMAL)
 
 # UDP 전송 타임아웃 (초)
@@ -101,7 +101,7 @@ class ControlService:
           {
             "status": "ok",
             "msg_id": 42,
-            "packet_size": 136,
+            "packet_size": 264,
             "target": "192.168.1.42:8888"
           }
 
@@ -223,7 +223,7 @@ class ControlService:
           msg_id:   uint16
           qos:      uint8
           topic_id: uint16
-          payload:  char[128]
+          payload:  char[256]  ← protocol.h 확장(128→256) 반영
           meta:     uint8 (비트필드)
 
         매개변수
@@ -234,7 +234,7 @@ class ControlService:
 
         반환값
         ------
-        bytes — 136바이트 패킷.
+        bytes — 264바이트 패킷.
         """
         # Header: length(uint8) + msg_type(uint8)
         # msg_id: uint16 (LE)

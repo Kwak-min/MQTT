@@ -156,7 +156,9 @@ def _parse_publish(raw: bytes, addr: Addr) -> PublishPacket:
     # PublishPacket의 마지막 1바이트는 비트필드 메타데이터입니다.
     # 이를 JSON에 포함하면 메타데이터 값이 0이 아닌 경우 파싱이 실패합니다.
     payload_bytes = raw[PUBLISH_MIN_LEN:]
-    if len(payload_bytes) >= 129:
+    # protocol.h: payload[256] + meta(1) = 257바이트 이상인 경우 마지막 메타 바이트 제거
+    # (구버전 payload[128] → 129, 현재 payload[256] → 257)
+    if len(payload_bytes) >= 257:
         payload_bytes = payload_bytes[:-1]
     payload_raw = payload_bytes.decode("utf-8", errors="ignore").rstrip("\x00")
 

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import time
 from typing import TYPE_CHECKING
 
@@ -122,7 +123,7 @@ def init_websocket(
                     }
                     ws.send(json.dumps(message, default=str))
 
-                except Exception:
+                except queue.Empty:
                     # 큐 타임아웃 — 하트비트 전송
                     try:
                         ws.send(json.dumps({

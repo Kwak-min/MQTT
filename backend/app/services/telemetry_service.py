@@ -311,7 +311,7 @@ class TelemetryService:
           (PublishPacket 페이로드에서 rtt, retry, sleep_r 자동 추출후 추정)
         """
         logger.warning(
-            "[텔레메트리] record_power_telemetry() 호출 — Board 3 하드웨어 거러 중단."
+            "[텔레메트리] record_power_telemetry() 호출 — Board 3 하드웨어 폐지됨."
             " SW 추정 경로(_estimate_and_record_power)를 사용하세요."
         )
 
