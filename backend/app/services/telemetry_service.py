@@ -153,6 +153,22 @@ class TelemetryService:
         "total_bytes",        # 디바이스 누적 전송 바이트 수
     ]
 
+    # 확장 전력 로그(power_ext.csv): power.csv와 같은 앞 9개 컬럼 + 논문 분석용 원시 입력과 에너지 구성.
+    # power.csv는 대시보드 호환을 위해 스키마를 바꾸지 않고, 새 컬럼은 이 파일에만 기록합니다.
+    _POWER_EXT_FIELDS: List[str] = _POWER_FIELDS + [
+        "transport",          # 이번 트랜잭션의 전송 계층 ("tcp" | "udp" | "unknown")
+        "act_ms",             # 이번 사이클의 활성 시간 (ms) — 에너지 재계산의 입력
+        "slp_ms",             # 이번 사이클의 Sleep 시간 (ms) — 에너지 재계산의 입력
+        "active_energy_mwh",  # 트랜잭션(TX/RX) 구간 에너지
+        "idle_energy_mwh",    # 대기 구간 에너지 (재전송 타임아웃 대기 포함)
+        "sleep_energy_mwh",   # Sleep 구간 에너지
+        "average_current_ma", # 사이클 평균 전류 (mA)
+        "net_loss_pct",       # 혼잡도: 손실률 EWMA (%), Standard/구버전은 빈 값
+        "rtt_ratio",          # 혼잡도: 평소 대비 지연 배율
+        "congested",          # 혼잡 상태 (0/1)
+        "probe",              # 관측용 QoS 1 프로브 사이클 (0/1)
+    ]
+
     # ── BME680 가스 저항 물리적 유효 범위 (kΩ 단위) ─────────────────────────
     # 1 kΩ 미만 : 히터가 아직 예열 중이거나 단락(쇼트) 상태
     # 10 MΩ 초과 : 센서 측정 범위 초과 / 매우 청정한 공기
@@ -476,6 +492,20 @@ class TelemetryService:
             snap["sleep_mode_ratio"]     = sleep_mode_ratio
 
             self._write_power_row(row)
+            self._write_power_ext_row({
+                **row,
+                "transport":          transport,
+                "act_ms":             round(active_ms, 3),
+                "slp_ms":             round(sleep_ms, 3),
+                "active_energy_mwh":  cycle["active_energy_mwh"],
+                "idle_energy_mwh":    cycle["idle_energy_mwh"],
+                "sleep_energy_mwh":   cycle["sleep_energy_mwh"],
+                "average_current_ma": cycle["average_current_ma"],
+                "net_loss_pct":       net_loss_pct,
+                "rtt_ratio":          rtt_ratio,
+                "congested":          None if congested is None else int(congested),
+                "probe":              None if probe is None else int(probe),
+            })
 
         logger.info(
             "[\uc804\ub825\ucd94\uc815] client='%s' QoS=%d | RTT=%.2f ms | retry=%d | "
@@ -716,6 +746,26 @@ class TelemetryService:
         except OSError as exc:
             logger.error("[텔레메트리] 전력 CSV 쓰기 실패: %s", exc)
 
+    def _power_ext_path(self) -> str:
+        """확장 전력 로그 경로. POWER_CSV와 같은 폴더의 power_ext.csv (POWER_CSV를 바꾸면 함께 바뀜)."""
+        return os.path.join(os.path.dirname(POWER_CSV), "power_ext.csv")
+
+    def _write_power_ext_row(self, row: dict) -> None:
+        """
+        확장 전력 로그(power_ext.csv)에 행 1개를 추가합니다. (호출자가 락을 보유 중)
+
+        기존 power.csv는 대시보드와 호환되도록 스키마를 그대로 두고, 논문 분석에 필요한 원시 입력
+        (사이클의 활성/Sleep 시간, 전송 계층, 혼잡 지표)과 에너지 구성을 여기에 따로 남깁니다.
+        원시 입력(qos, rtt_ms, retry_count, act_ms, slp_ms)이 있으므로 나중에 모델 상수를 바꿔
+        실측 로그로 에너지를 다시 계산할 수 있습니다 (backend/tools/analyze_power.py --sensitivity).
+        """
+        try:
+            with open(self._power_ext_path(), "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=self._POWER_EXT_FIELDS, extrasaction="ignore")
+                writer.writerow(row)
+        except OSError as exc:
+            logger.error("[텔레메트리] 확장 전력 CSV 쓰기 실패: %s", exc)
+
     # ──────────────────────────────────────────────────────────────────────────
     # CSV 헤더 초기화
     # ──────────────────────────────────────────────────────────────────────────
@@ -725,6 +775,7 @@ class TelemetryService:
         for path, fields in [
             (TELEMETRY_CSV, self._ENV_FIELDS),
             (POWER_CSV,     self._POWER_FIELDS),
+            (self._power_ext_path(), self._POWER_EXT_FIELDS),
         ]:
             if not os.path.exists(path):
                 try:

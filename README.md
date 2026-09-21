@@ -44,6 +44,19 @@ INA226과 같은 외부 하드웨어 전력 측정 장치 없이 전력 효율�
 5.  **총 전송 바이트 (Total Transmitted Bytes)**: 세션 동안 누적된 전체 네트워크 페이로드 크기.
 6.  **알고리즘 복잡도 (Algorithm Complexity)**: Flash(Sketch 크기) 및 정적 RAM(SRAM) 사용량으로 측정된 TinyML 모델의 펌웨어 풋프린트. (정확한 실측 바이트 수는 `main_gingerbread.cpp` 내의 인라인 주석/독스트링 참조).
 
+## 실험 결과 분석
+게이트웨이는 `backend/logs/power.csv`(대시보드 호환, 스키마 고정) 외에, 분석용 원시 입력을 담은
+`backend/logs/power_ext.csv`를 함께 기록합니다 (전송 계층, 사이클의 활성/Sleep 시간, 에너지 구성, 혼잡 지표).
+```
+python backend/tools/analyze_power.py --skip-first 24 --sensitivity --md 결과.md
+```
+- 두 노드를 **평균 전류**(사이클 길이가 달라도 공정)로 비교하고, 부트스트랩 95% 신뢰구간과 표본 수를 함께 출력합니다.
+- `--sensitivity`는 같은 로그의 원시 입력으로 `IDLE_MA` 등 모델 상수를 바꿔 다시 계산하고, "Sleep이 실제로는 대기였다면"의
+  해석도 함께 보여 줍니다. 두 해석의 차이가 크면 절감은 시스템이 아니라 Sleep 구현 여부에 좌우됩니다.
+- 출력되는 모든 에너지는 소프트웨어 모델의 **추정값**입니다. 실측 전류로 검증하기 전에는 절대값을 주장하지 마세요.
+- 게이트웨이 쪽 배선은 하드웨어 없이 `python backend/tools/e2e_gateway_sim.py`로 점검할 수 있습니다.
+- 참고: 장비 ID는 `ConnectPacket.client_id`(16바이트) 제한으로 잘려 기록됩니다 (`ESP32-Gingerbread` → `ESP32-Gingerbrea`).
+
 ## 시스템 구성 요소
 *   `firmware/`: ESP32-S3 노드를 위한 PlatformIO 프로젝트 폴더입니다.
 *   `backend/`: UDP 수신, 경험적 전력 추정 및 로그 기록을 담당하는 Python 기반의 라즈베리파이 게이트웨이입니다.

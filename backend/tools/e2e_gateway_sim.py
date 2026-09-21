@@ -456,6 +456,22 @@ def main() -> int:
         hdr = open(os.path.join(logs, "power.csv"), encoding="utf-8").readline().strip()
         check("17) power.csv 스키마 (기존 대시보드와 호환)",
               hdr == "timestamp,client_id,qos,rtt_ms,retry_count,sleep_mode_ratio,estimated_energy_mwh,packet_count,total_bytes", f"| {hdr}")
+        # 확장 전력 로그: 분석(backend/tools/analyze_power.py)에 필요한 원시 입력과 혼잡·전송 계층이 기록되는지
+        ext = read_csv(os.path.join(logs, "power_ext.csv"))
+        udp_row = next((r for r in ext if r["client_id"] == DEVICE_ID and r["transport"] == "udp"), None)
+        tcp_row = next((r for r in ext if r["client_id"] == DEVICE_ID and r["transport"] == "tcp"), None)
+        std_row = next((r for r in ext if r["client_id"] == STD_CLIENT_ID), None)
+        check("18) power_ext.csv: 전송 계층·사이클 시간·혼잡 지표 기록 (UDP/TCP/Standard 모두)",
+              len(ext) == len(pwr()) and udp_row and tcp_row and std_row
+              and udp_row["act_ms"] == "120.0" and udp_row["probe"] == "1" and tcp_row["qos"] == "2" and std_row["congested"] == "",
+              f"| 행 {len(ext)}개(power.csv와 동일), UDP {bool(udp_row)}, TCP {bool(tcp_row)}, Standard {bool(std_row)}")
+        # 분석 스크립트가 이 로그를 그대로 읽어 결과를 낼 수 있는지 (표본이 적어 경고가 나오는 것은 정상)
+        shutil.copy(os.path.join(logs, "power_ext.csv"), os.path.join(work, "power_ext_copy.csv"))
+        an = subprocess.run([sys.executable, os.path.join(HERE, "analyze_power.py"), "--csv", os.path.join(work, "power_ext_copy.csv"),
+                             "--a", "ESP32-Gingerbread", "--b", "Standard", "--boot", "100"],
+                            capture_output=True, text=True, encoding="utf-8", env=env)
+        check("19) analyze_power.py 가 실제 게이트웨이가 쓴 로그를 그대로 분석함",
+              an.returncode == 0 and "평균 전류 비" in an.stdout, f"| 종료 코드 {an.returncode}" + ("" if an.returncode == 0 else f" | {an.stderr[-200:]}"))
         dev.close()
     except Exception as exc:   # 시나리오 도중 예외: 원인을 남기고 실패 처리
         check("시뮬레이션 실행 중 예외", False, f"| {type(exc).__name__}: {exc}")
