@@ -313,7 +313,7 @@ void loop() {
     char metrics[200];
     snprintf(metrics, sizeof(metrics),
              "{\"qos\":%d,\"rtt\":%.2f,\"retry\":%d,\"sleep_r\":%.4f,"
-             "\"act\":%lu,\"slp\":0,\"pkt\":%u,\"bytes\":%u}",
+             "\"act\":%lu,\"slp\":0,\"tp\":\"tcp\",\"pkt\":%u,\"bytes\":%u}",
              FIXED_QOS, rtt_ms, retry_count, sleep_mode_ratio,
              (unsigned long)PUBLISH_INTERVAL_MS,
              g_packet_count, g_total_bytes);

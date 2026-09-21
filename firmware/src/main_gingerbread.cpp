@@ -25,7 +25,7 @@
  * │ 3. 고충실도 MLP 신경망 추론 엔진 (TinyML Edge AI)                         │
  * │    - 외부 TensorFlow Lite Micro 런타임 없이 순수 C++ 구현                 │
  * │    - 은닉층(5노드, ReLU) + 출력층(1노드, Sigmoid) 피드포워드 구조         │
- * │    - run_neural_network_inference(temp, hum, gas_kohm) 반환값:          │
+ * │    - run_neural_network_inference(temp, hum, gas_kohm, pres_hpa, gas_ratio) 반환값:          │
  * │        0.0 ~ 1.0 사이의 연속적 위험 확률 점수                             │
  * │                                                                         │
  * │ 4. 신경망 연속 출력 기반 동적 QoS 스위칭                                   │
@@ -70,6 +70,9 @@
 #include <math.h>               // expf() 함수 (Sigmoid 활성화 함수 연산용)
 #include <Wire.h>               // BME680 I2C 통신
 #include <Adafruit_BME680.h>    // BME680 환경 센서 드라이버
+#include "mlp_inference.h"      // 위험 점수 MLP 순전파 + 가중치 (include/, ml_model/train.py가 생성)
+#include "gas_baseline.h"       // 가스 저항의 기준값 대비 비율 추적기 (include/)
+#include "net_congestion.h"     // 네트워크 혼잡도(손실률/지연) 추적기 (include/)
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * [섹션 A] 네트워크 자격증명 및 서버 엔드포인트 설정
@@ -86,6 +89,15 @@ static const char    *WIFI_PASSWORD    = "YOUR_WIFI_PASSWORD"; // Wi-Fi 비밀�
 // 라즈베리파이 5에서 실행 중인 Python 게이트웨이 서버의 수신 엔드포인트
 static const char    *UDP_SERVER_IP    = "10.61.35.14";
 static const uint16_t UDP_SERVER_PORT  = 5000;
+
+// ── QoS 레벨별 전송 계층 (프로젝트 명세) ─────────────────────────────────────
+//   QoS 0·1                   → UDP  (오버헤드가 적은 저전력 모드)
+//   TCP_MIN_QOS 이상의 상위 QoS → TCP  (수신 보장이 필수인 신뢰성 모드)
+// 같은 게이트웨이(UDP_SERVER_IP)의 TCP_SERVER_PORT로 전송합니다. 게이트웨이의
+// backend/config.py GINGERBREAD_TCP_PORT와 일치해야 합니다.
+// TCP_MIN_QOS를 3으로 올리면 모든 QoS가 UDP로 처리됩니다(QoS 2는 기존 4단계 UDP 핸드셰이크).
+static const uint16_t TCP_SERVER_PORT  = 5001;
+static const uint8_t  TCP_MIN_QOS      = 2;
 
 // 표준 MQTT 브로커 주소 및 포트 (Mosquitto)
 // "gingerbread/config" 토픽 설정 구독에만 사용됩니다.
@@ -185,6 +197,8 @@ struct SensorInputs {
   float  temp;        // BME680 온도 (°C) — 신경망 입력 특징 1
   float  hum;         // BME680 상대 습도 (%) — 신경망 입력 특징 2
   float  gas_kohm;    // BME680 가스 저항값 (kΩ) — 신경망 입력 특징 3
+  float  pres_hpa;    // BME680 기압 (hPa) — 신경망 입력 특징 4
+  float  gas_ratio;   // 가스 저항 / 기준값 (0~1, gas_baseline.h) — 신경망 입력 특징 5
   float  battery_pct; // 배터리 레벨 (0.0~100.0 %)
                       //   EXTERNAL_5V 모드 → 대시보드 CURRENT_BATTERY_LEVEL 값
                       //   BATTERY 모드     → ADC 실측 전압 변환값
@@ -253,6 +267,31 @@ static float read_gas_resistance_kohm() {
   return bme680.gas_resistance / 1000.0f;
 }
 
+/*
+ * BME680 기압 측정 함수 (hPa)
+ * Adafruit_BME680의 pressure는 Pa 단위이므로 100으로 나눠 hPa로 변환합니다.
+ * 신경망 입력 특징 4에 사용됩니다. (ml_model/collect.py가 저장하는 pres_hpa 컬럼과 같은 단위)
+ */
+static float read_pressure_hpa() {
+  return bme680.pressure / 100.0f;
+}
+
+/*
+ * 가스 저항 기준값 추적 상태 (SRAM 8바이트). 부팅하면 초기화되며 처음 GAS_BASELINE_WARMUP_SAMPLES 샘플
+ * 동안은 비율이 1.0으로 고정됩니다 (gas_baseline.h 참조). loop()당 한 번 갱신됩니다.
+ */
+static GasBaseline g_gas_baseline = { 0.0f, 0 };
+
+/*
+ * 네트워크 혼잡도 추적 상태 (net_congestion.h). ACK를 받는 전송(QoS 1, TCP)의 결과로 갱신되며,
+ * 혼잡하면 QoS를 최소 1로 올립니다. QoS 0이 길어지면 관측을 위해 QoS 1 프로브를 한 번 보냅니다.
+ * g_probe_this_cycle : 이번 사이클이 프로브(그렇지 않았다면 QoS 0이었을 사이클)인가
+ * g_loss_limit      : 이번 사이클에 읽은 PACKET_LOSS_LIMIT(%) 스냅샷 (혼잡 판정 임계값)
+ */
+static NetCongestion g_net = { 0.0f, 0.0f, 0.0f, 0, false, 0, 0 };
+static bool          g_probe_this_cycle = false;
+static float         g_loss_limit = 5.0f;
+
 static bool read_bme680() {
   return bme680.performReading();
 }
@@ -316,9 +355,9 @@ static float read_battery_adc_pct() {
  * 효율적으로 동작합니다.
  *
  * 아키텍처:
- *   입력층 (3 노드): 온도, 습도, 가스 저항
+ *   입력층 (5 노드): 온도, 습도, 가스 저항, 기압 (BME680 측정값 전부) + 가스 비율 (기준값 대비, 파생값)
  *       ↓ 표준 스케일링 정규화 전처리
- *   은닉층 (5 노드): w_hidden[5][3] 가중치 + b_hidden[5] 편향 + ReLU 활성화
+ *   은닉층 (5 노드): w_hidden[5][5] 가중치 + b_hidden[5] 편향 + ReLU 활성화
  *       ↓ 벡터화 행렬 곱셈 연산
  *   출력층 (1 노드): w_output[5] 가중치 + b_output 편향 + Sigmoid 활성화
  *       ↓
@@ -327,165 +366,74 @@ static float read_battery_adc_pct() {
  * ─── [Algorithm Complexity & Memory Footprint] ────────────────────────────
  *
  * Time Complexity  : O(H × I + O × H)
- *   H = 5 hidden nodes, I = 3 inputs, O = 1 output
- *   → 총 5×3 + 1×5 = 20 MAC(Multiply-Accumulate) 연산/추론 사이클
- *   → 표준 스케일링 전처리: 3 MACs (추가)
- *   → 총 실효 MACs ≈ 23 (단정밀도 부동소수점)
+ *   H = 5 hidden nodes, I = 5 inputs, O = 1 output
+ *   → 총 5×5 + 1×5 = 30 MAC(Multiply-Accumulate) 연산/추론 사이클
+ *   → 표준 스케일링 전처리: 5 연산 (추가)
+ *   → 총 실효 연산 ≈ 35 (단정밀도 부동소수점)
+ *   → 가스 기준값 추적: 샘플당 비교/곱/나눗셈 수 회 (gas_baseline.h)
  *
- * Space Complexity : O(H×I + H + O×H + O) = O(26) floats
- *   w_hidden[5][3] = 15 floats (ROM/Flash 상수)
+ * Space Complexity : O(H×I + H + O×H + O) = O(36) floats
+ *   w_hidden[5][5] = 25 floats (ROM/Flash 상수)
  *   b_hidden[5]    =  5 floats (ROM/Flash 상수)
  *   w_output[5]    =  5 floats (ROM/Flash 상수)
  *   b_output       =  1 float  (ROM/Flash 상수)
- *   x[3], hidden_out[5], z 스택 지역변수 = ~9 floats (SRAM 스택)
- *   합계: 26 floats × 4 bytes = 104 bytes Flash 상수
- *                              +  36 bytes SRAM 스택 (함수 호출 중)
+ *   정규화 상수 MEAN[5]+STD[5] = 10 floats, QoS 임계값 2 floats (ROM/Flash 상수)
+ *   x[5], raw[5], z, z_out, h 스택 지역변수 = ~13 floats (SRAM 스택, 추정)
+ *   합계: 가중치 36 floats × 4 bytes = 144 bytes Flash 상수
+ *         + 정규화·임계값 12 floats = 48 bytes → 총 192 bytes Flash 상수
+ *         + 약 52 bytes SRAM 스택 (함수 호출 중, 추정)
+ *         + 가스 기준값 상태 8 bytes SRAM (정적, g_gas_baseline)
  *
  * [Measured Build Metrics — 2026-06-19]
+ *   ※ 아래 실측값은 이 MLP(3입력)와 이후 변경(TCP 전송, 4입력 등) 이전 빌드의 것입니다.
+ *     논문에 넣기 전에 `pio run -e board1_gingerbread`로 다시 측정하세요.
  *   > pio run -e board1_gingerbread --verbose 2>&1 | findstr /i "ram flash sketch"
  *
  *   Flash (Sketch): 728,649 bytes / 3,342,336 bytes  = 21.8%
  *   Global RAM    :  45,148 bytes /   327,680 bytes  = 13.8%
  *
  *   TinyML MLP 개별 기여분 (전체 대비 근사치):
- *     w_hidden[5][3], b_hidden[5], w_output[5], b_output = 26 floats × 4B = 104B Flash
- *     스택 임시 변수 (x, hidden_out, z 등)              = 36B SRAM (호출 중)
+ *     w_hidden[5][5], b_hidden[5], w_output[5], b_output = 36 floats × 4B = 144B Flash
+ *     스택 임시 변수 (x, raw, z 등)                      = 약 52B SRAM (호출 중, 추정)
  *
  * [TinyML Inference Timing Estimate]
  *   ESP32-S3 Xtensa LX7 @ 240 MHz with hardware FPU:
- *   23 MACs × ~5 ns/MAC ≈ < 1 μs per inference (실측 기준 << 10 μs)
+ *   35 연산 × ~5 ns ≈ < 1 μs per inference (추정치 — 실측한 값이 아님)
  *   expf() Sigmoid: ~200 ns (하드웨어 FPU 가속)
  *   총 추론 시간 예상: < 5 μs (측정 오버헤드 제외)
  *
  *   [Complexity Column 평가 지표 요약 (논문 Table 삽입용)]
  *   | 지표                   | 값                         |
  *   |------------------------|----------------------------|
- *   | MLP 구조               | 3-5-1 (Input-Hidden-Output)|
- *   | 추론 MACs              | ~23 float MACs/cycle       |
- *   | 가중치 저장 (Flash)    | 104 bytes (ROM 상수)       |
- *   | 런타임 SRAM (스택)     | ~36 bytes (지역변수)       |
+ *   | MLP 구조               | 5-5-1 (Input-Hidden-Output)|
+ *   | 추론 연산              | ~35 float 연산/cycle       |
+ *   | 가중치 저장 (Flash)    | 144 bytes (+상수 48 bytes) |
+ *   | 런타임 SRAM            | ~52 bytes 스택 + 8 bytes 상태|
  *   | 추론 지연 (240 MHz)    | < 5 μs (FPU 가속)          |
  *   | 외부 런타임 라이브러리 | 없음 (순수 C++ 구현)       |
  * ─────────────────────────────────────────────────────────────────────────
  *
  * 가중치 출처:
- *   화재/가스 위험 환경 데이터셋으로 사전 학습된 MLP 모델의 파라미터를
- *   하드코딩 상수로 플래시(ROM)에 저장합니다.
- *   실제 프로덕션 배포 시 Python 학습 스크립트로 재보정 가능합니다.
+ *   include/mlp_weights.h (ml_model/train.py가 직접 수집한 데이터로 학습해 생성).
+ *   MLP_WEIGHTS_TRAINED가 0이면 학습되지 않은 임시값이며 부팅 시 경고가 출력됩니다.
+ *   (이전 주석은 "화재/가스 데이터셋으로 사전 학습"이라고 했으나 사실이 아니었습니다.
+ *    값은 다른 AI가 만든 숫자였고 학습 데이터와 스크립트는 존재하지 않았습니다.)
  *
  * 매개변수:
  *   temp      - BME680 온도 (°C)
  *   hum       - BME680 상대 습도 (%)
  *   gas_kohm  - BME680 가스 저항값 (kΩ)
+ *   pres_hpa  - BME680 기압 (hPa)
+ *   gas_ratio - 가스 저항 / 기준값 (0~1, gas_baseline.h)
  *
  * 반환값:
  *   위험 확률 점수 (0.0 = 완전 안전 ~ 1.0 = 최고 위험)
  * ═══════════════════════════════════════════════════════════════════════════ */
-float run_neural_network_inference(float temp, float hum, float gas_kohm) {
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // [1단계] 입력 특징 표준 스케일링 정규화 (Standard Scaling Preprocessing)
-  //
-  // 수식: x_norm = (x_raw - μ) / σ
-  //   온도:     μ=25.0°C,  σ=10.0  → 정상 구간(-3σ~+3σ): -5°C ~ 55°C
-  //   습도:     μ=50.0%,   σ=20.0  → 정상 구간(-3σ~+3σ): -10% ~ 110%
-  //   가스저항: μ=30.0kΩ,  σ=15.0  → 정상 구간(-3σ~+3σ): -15kΩ ~ 75kΩ
-  //
-  // 정규화를 통해 각 특징의 스케일 차이를 제거하고,
-  // 경사 하강법(Gradient Descent) 학습 수렴 효율을 높입니다.
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  float x[3];
-  x[0] = (temp     - 25.0f) / 10.0f;  // 온도 정규화 (특징 0)
-  x[1] = (hum      - 50.0f) / 20.0f;  // 습도 정규화 (특징 1)
-  x[2] = (gas_kohm - 30.0f) / 15.0f;  // 가스 저항 정규화 (특징 2)
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // [2단계] 은닉층 가중치 행렬 및 편향 벡터 정의 (Hidden Layer: 5 노드)
-  //
-  // w_hidden[i][j]: i번째 은닉 노드가 j번째 입력 특징에 부여하는 가중치
-  //   - 양수 가중치: 해당 특징이 증가할수록 노드 활성화가 강해짐
-  //   - 음수 가중치: 해당 특징이 증가할수록 노드 활성화가 억제됨
-  //
-  // 가스 저항(x[2])에 대한 가중치가 강하게 음수인 이유:
-  //   가스 저항값이 낮아질수록(오염도 증가) 위험도가 상승하는 물리적 관계를 반영
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  const float w_hidden[5][3] = {
-    //  온도(x0)  습도(x1)  가스저항(x2)
-    {  0.45f,  -0.21f,  -0.78f },  // 은닉 노드 0: 고온·저저항 위험 패턴 감지
-    { -0.12f,   0.34f,  -0.62f },  // 은닉 노드 1: 고습·저저항 복합 위험 감지
-    {  0.67f,   0.11f,  -0.15f },  // 은닉 노드 2: 온도 상승 기여도 중점 노드
-    { -0.29f,  -0.55f,  -0.91f },  // 은닉 노드 3: 저저항(가스 누출) 집중 감지
-    {  0.51f,   0.22f,  -0.44f },  // 은닉 노드 4: 온도·가스 복합 위험 탐지
-  };
-
-  // 은닉층 편향 벡터: 각 노드의 활성화 기준점(threshold)을 좌우합니다.
-  const float b_hidden[5] = { 0.12f, -0.05f, 0.23f, -0.18f, 0.08f };
-
-  // 은닉층 출력값 배열 (ReLU 적용 후 저장)
-  float hidden_out[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // [3단계] 은닉층 피드포워드 행렬 연산 + ReLU 활성화 함수 적용
-  //
-  // 연산: h[i] = ReLU( Σ_j(x[j] * w_hidden[i][j]) + b_hidden[i] )
-  //
-  // ReLU(Rectified Linear Unit) 활성화 함수:
-  //   - ReLU(z) = max(0, z)
-  //   - 음수 입력을 0으로 차단하여 비선형 결정 경계를 생성합니다.
-  //   - 역전파(Backpropagation) 시 기울기 소실(Vanishing Gradient)을
-  //     Sigmoid/Tanh 대비 효과적으로 방지합니다.
-  //   - 연산이 단순하여 마이크로컨트롤러(MCU) 환경에 최적합니다.
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  for (int i = 0; i < 5; i++) {
-    float z = b_hidden[i]; // 편향으로 누적합 초기화
-    for (int j = 0; j < 3; j++) {
-      z += x[j] * w_hidden[i][j]; // 가중합 누적
-    }
-    // ReLU: 0보다 작은 값은 0으로 클리핑 (비선형성 도입)
-    hidden_out[i] = (z > 0.0f) ? z : 0.0f;
-  }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // [4단계] 출력층 가중치 및 편향 정의 (Output Layer: 1 노드)
-  //
-  // w_output[i]: i번째 은닉 노드의 출력이 최종 위험 점수에 기여하는 가중치
-  //   - 양수: 해당 은닉 특징이 강할수록 위험 점수 증가 (위험 신호 증폭)
-  //   - 음수: 해당 은닉 특징이 강할수록 위험 점수 감소 (안전 신호 증폭)
-  //
-  // b_output: 출력층 편향 (기본 위험 경향을 결정하는 바이어스)
-  //   음수 편향은 신경망이 보수적으로 동작하게 유도합니다.
-  //   즉, 입력 특징이 충분히 위험하지 않으면 Sigmoid 출력이 0.5 미만을 유지합니다.
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  const float w_output[5] = { 0.88f, 0.65f, -0.24f, 0.95f, 0.41f };
-  const float b_output     = -0.32f;
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // [5단계] 출력층 가중합 연산
-  //
-  // 연산: z_out = Σ_i(hidden_out[i] * w_output[i]) + b_output
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  float z_out = b_output; // 편향으로 출력 누적합 초기화
-  for (int i = 0; i < 5; i++) {
-    z_out += hidden_out[i] * w_output[i]; // 은닉층 출력과 출력 가중치 곱 누적
-  }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // [6단계] Sigmoid 활성화 함수 적용 → 최종 위험 확률 출력
-  //
-  // Sigmoid(z) = 1 / (1 + e^(-z))
-  //
-  // 특성:
-  //   - 출력 범위가 항상 (0.0, 1.0) 이내로 제한됩니다.
-  //   - z_out이 매우 크면(위험 특징 강함) → 출력이 1.0에 수렴
-  //   - z_out이 매우 작으면(안전 특징 강함) → 출력이 0.0에 수렴
-  //   - z_out = 0이면 → 출력 = 0.5 (결정 경계)
-  //
-  // expf()는 <math.h>에서 제공하는 단정밀도 부동소수점 지수 함수입니다.
-  // expf()는 esp32 하드웨어 FPU와 호환되어 효율적으로 연산됩니다.
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  float danger_probability = 1.0f / (1.0f + expf(-z_out));
-
-  return danger_probability; // 위험 확률 점수 반환 (0.0 ~ 1.0)
+float run_neural_network_inference(float temp, float hum, float gas_kohm, float pres_hpa, float gas_ratio) {
+  // 순전파(표준화 → 은닉층 ReLU → 출력층 Sigmoid)는 include/mlp_inference.h로 분리했습니다.
+  // 표준 C++만 쓰므로 PC에서도 같은 코드를 컴파일해 파이썬 학습 모델과 출력을 대조할 수 있습니다
+  // (ml_model/verify_export.py). 가중치·정규화 상수는 include/mlp_weights.h에서 옵니다.
+  return mlp_forward(temp, hum, gas_kohm, pres_hpa, gas_ratio);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -667,6 +615,8 @@ static SensorInputs preprocess_sensor_inputs() {
   inputs.temp     = read_temperature();         // BME680 온도 (°C)
   inputs.hum      = read_humidity();            // BME680 습도 (%)
   inputs.gas_kohm = read_gas_resistance_kohm(); // BME680 가스 저항 (kΩ)
+  inputs.pres_hpa = read_pressure_hpa();        // BME680 기압 (hPa)
+  inputs.gas_ratio = gas_baseline_update(g_gas_baseline, inputs.gas_kohm); // 가스 저항 / 기준값
   inputs.rssi     = get_wifi_rssi();            // Wi-Fi 신호 강도 (dBm)
 
   // ── Mutex 보호 하에 전원 모드 설정의 로컬 스냅샷 획득 ───────────────────
@@ -722,9 +672,9 @@ static SensorInputs preprocess_sensor_inputs() {
  * ┌──────────────────┬──────────────┬─────────────────────────────────────┐
  * │ danger_probability│ 상태        │ 선택 QoS (동작)                      │
  * ├──────────────────┼──────────────┼─────────────────────────────────────┤
- * │ >= 0.75          │ CRITICAL     │ QoS 2 (4단계 핸드셰이크, 절대 신뢰) │
- * │ >= 0.40          │ WARNING      │ QoS 1 (2단계 핸드셰이크, 재전송 보장)│
- * │  < 0.40          │ NORMAL       │ QoS 0 (무확인 단발 전송, 최대 저전력)│
+ * │ >= TH_QOS2       │ CRITICAL     │ QoS 2 (4단계 핸드셰이크, 절대 신뢰) │
+ * │ >= TH_QOS1       │ WARNING      │ QoS 1 (2단계 핸드셰이크, 재전송 보장)│
+ * │  < TH_QOS1       │ NORMAL       │ QoS 0 (무확인 단발 전송, 최대 저전력)│
  * └──────────────────┴──────────────┴─────────────────────────────────────┘
  *
  * 추가로 RSSI 기반 네트워크 상태를 평가합니다:
@@ -746,47 +696,50 @@ static QoSLevel run_agent_inference(const SensorInputs &inputs,
 
   // ── 단계 1: TinyML MLP 신경망 피드포워드 추론 실행 ──────────────────────
   // 3개 환경 센서 특징을 입력으로 받아 위험 확률 점수를 계산합니다.
-  Serial.println("[신경망] 🧠 MLP 피드포워드 추론 시작 (입력: 온도/습도/가스저항)");
+  Serial.println("[신경망] 🧠 MLP 피드포워드 추론 시작 (입력: 온도/습도/가스저항/기압/가스비율)");
   float danger_probability = run_neural_network_inference(
-      inputs.temp, inputs.hum, inputs.gas_kohm);
+      inputs.temp, inputs.hum, inputs.gas_kohm, inputs.pres_hpa, inputs.gas_ratio);
   nn_score_out = danger_probability; // 호출자에게 원시 점수 노출 (페이로드 포함용)
 
   // 추론 결과 상세 출력 (가중치 연산 → 최종 확률 점수)
-  Serial.printf("[신경망] 입력값 → 온도: %.2f°C | 습도: %.2f%% | 가스저항: %.2f kΩ\n",
-                inputs.temp, inputs.hum, inputs.gas_kohm);
+  Serial.printf("[신경망] 입력값 → 온도: %.2f°C | 습도: %.2f%% | 가스저항: %.2f kΩ | 기압: %.2f hPa | 가스비율: %.3f\n",
+                inputs.temp, inputs.hum, inputs.gas_kohm, inputs.pres_hpa, inputs.gas_ratio);
   Serial.printf("[신경망] MLP 추론 완료 → 위험 확률 점수: %.4f (%.2f%%)\n",
                 danger_probability, danger_probability * 100.0f);
 
   // ── 단계 2: 신경망 출력 → 긴급도(urgency) 매핑 ─────────────────────────
   // 연속 확률 점수를 3단계 이산 긴급도로 분류합니다.
-  if (danger_probability >= 0.75f) {
+  if (danger_probability >= MLP_TH_QOS2) {
     // 위험 확률 75% 이상: CRITICAL 판정
     // 화재 또는 심각한 가스 누출 등 즉각적 위협이 감지된 상태입니다.
     urgency = 2;
-    Serial.println("[신경망] 판정: 🔴 CRITICAL — 즉각적 위협 감지 (신뢰도 ≥ 75%)");
-  } else if (danger_probability >= 0.40f) {
+    Serial.println("[신경망] 판정: 🔴 CRITICAL — 즉각적 위협 감지 (점수 ≥ QoS 2 임계값)");
+  } else if (danger_probability >= MLP_TH_QOS1) {
     // 위험 확률 40% 이상 ~ 75% 미만: WARNING 판정
     // 주의가 필요한 환경 변화가 감지된 경계 상태입니다.
     urgency = 1;
-    Serial.println("[신경망] 판정: 🟡 WARNING  — 경계 상태 감지 (신뢰도 40~75%)");
+    Serial.println("[신경망] 판정: 🟡 WARNING  — 경계 상태 감지 (점수가 QoS 1~2 임계값 사이)");
   } else {
     // 위험 확률 40% 미만: NORMAL 판정
     // 환경이 정상 범위 내에 있으며 추가 조치가 불필요합니다.
     urgency = 0;
-    Serial.println("[신경망] 판정: 🟢 NORMAL   — 정상 상태 확인 (신뢰도 < 40%)");
+    Serial.println("[신경망] 판정: 🟢 NORMAL   — 정상 상태 확인 (점수 < QoS 1 임계값)");
   }
 
-  // ── 단계 3: 네트워크 상태 판정 (RSSI 기반) ──────────────────────────────
-  // Mutex 보호 하에 RSSI 임계값 스냅샷 획득
-  int8_t local_rssi_thresh = -80; // Mutex 실패 시 안전 기본값
+  // ── 단계 3: 네트워크 상태 판정 (RSSI + 실측 혼잡도) ─────────────────────
+  // Mutex 보호 하에 RSSI 임계값과 패킷 손실 상한의 스냅샷 획득
+  int8_t local_rssi_thresh = -80;   // Mutex 실패 시 안전 기본값
+  float  local_loss_limit  = 5.0f;  // Mutex 실패 시 안전 기본값 (PACKET_LOSS_LIMIT, %)
 
   if (g_config_mutex != nullptr &&
       xSemaphoreTake(g_config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     local_rssi_thresh = g_config.rssi_threshold;
+    local_loss_limit  = g_config.packet_loss_limit;
     xSemaphoreGive(g_config_mutex);
   } else {
-    Serial.println("[추론] ⚠ RSSI 임계값 Mutex 타임아웃 — 기본값 -80 dBm 사용");
+    Serial.println("[추론] ⚠ 네트워크 임계값 Mutex 타임아웃 — 기본값(RSSI -80 dBm, 손실 상한 5%) 사용");
   }
+  g_loss_limit = local_loss_limit;  // 전송 후 혼잡도 갱신(net_observe)에서 같은 값을 씁니다
 
   // RSSI가 동적 임계값(기본 -80 dBm) 미만이면 불안정 선로로 판정합니다.
   // 불안정 선로에서는 QoS 레벨을 높여 재전송을 통한 신뢰성을 확보합니다.
@@ -795,23 +748,43 @@ static QoSLevel run_agent_inference(const SensorInputs &inputs,
                 inputs.rssi, local_rssi_thresh,
                 net_status == 1 ? "불안정" : "안정");
 
+  // 혼잡도: ACK를 받는 전송의 실측 손실률/지연으로 판정합니다. RSSI는 신호 세기일 뿐 혼잡도가 아닙니다
+  // (신호가 강해도 혼잡해서 손실될 수 있음). 환경이 정상이고 RSSI도 좋은데 QoS 0이 길게 이어져 관측이
+  // 없었다면, 이번 사이클은 QoS 1 프로브로 보내 현재 네트워크 상태를 측정합니다.
+  // 판정 규칙은 net_congestion.h의 net_decide_qos()에 있습니다 (시험이 같은 코드를 검증).
+  const bool congested = g_net.degraded;
+  const QosDecision decision = net_decide_qos(danger_probability >= MLP_TH_QOS2,
+                                              danger_probability >= MLP_TH_QOS1,
+                                              net_status == 1, g_net);
+  g_probe_this_cycle = decision.probe;
+  Serial.printf("[추론] 혼잡도: 손실 %.1f%% (상한 %.1f%%) | 지연 배율 %.2f | ACK 없는 사이클 %u/%d → %s%s\n",
+                g_net.loss_pct, local_loss_limit, net_rtt_ratio(g_net),
+                (unsigned)g_net.idle_cycles, NET_PROBE_INTERVAL,
+                congested ? "혼잡" : "정상", g_probe_this_cycle ? " (관측용 프로브 사이클)" : "");
+
   // ── 단계 4: 신경망 분류 결과 → QoS 레벨 최종 결정 ────────────────────
-  // 신경망 판정 긴급도와 네트워크 상태를 종합하여 QoS를 선택합니다.
+  // QoS = max(환경 위험 QoS, 네트워크 QoS). 네트워크(RSSI 약함/혼잡/프로브)는 QoS를 최대 1까지만 올립니다.
+  // QoS 2(TCP)는 환경 위험 전용으로 유지합니다.
   QoSLevel selected_qos;
 
-  if (danger_probability >= 0.75f) {
+  if (decision.qos == 2) {
     // CRITICAL 상태: 신경망이 고신뢰도로 위험을 판정
     // QoS 2의 4단계 핸드셰이크(PUBLISH→PUBREC→PUBREL→PUBCOMP)로
     // 정확히 1회 전달(Exactly-Once Delivery)을 보장합니다.
     // 네트워크 상태와 무관하게 QoS 2를 강제 할당합니다.
     selected_qos = QoSLevel::QoS2;
     Serial.println("[QoS결정] ⚡ QoS 2 강제 할당 — CRITICAL: 절대 신뢰성 전송 모드");
-  } else if (danger_probability >= 0.40f || net_status == 1) {
+  } else if (decision.qos == 1) {
     // WARNING 상태 또는 네트워크 불안정: 중간 수준 위협 감지
     // QoS 1의 2단계 핸드셰이크(PUBLISH→PUBACK)로 최소 1회 전달을 보장합니다.
     // 재전송(최대 3회)으로 메시지 손실을 방지합니다.
     selected_qos = QoSLevel::QoS1;
-    Serial.println("[QoS결정] ⚡ QoS 1 전환 — WARNING/불안정 네트워크: 신뢰 전송 모드");
+    // 사유를 모두 표시합니다 (현장에서 "왜 QoS 1인가"를 바로 확인할 수 있도록).
+    Serial.printf("[QoS결정] ⚡ QoS 1 전환 — 사유:%s%s%s%s\n",
+                  danger_probability >= MLP_TH_QOS1 ? " 환경경고" : "",
+                  net_status == 1 ? " RSSI약함" : "",
+                  congested ? " 네트워크혼잡" : "",
+                  g_probe_this_cycle ? " 관측프로브" : "");
   } else {
     // NORMAL 상태 + 네트워크 안정: 위협 없음
     // QoS 0의 무확인 단발 전송(Fire-and-Forget)으로 전력 소모를 최소화합니다.
@@ -875,6 +848,60 @@ static bool wait_for_packet(MsgType expected_type, uint16_t target_msg_id) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * [섹션 L-2] TCP 전송 — 상위 QoS(TCP_MIN_QOS 이상) 신뢰성 모드
+ *
+ * 와이어 포맷 (little-endian):
+ *   디바이스 → 게이트웨이 : [len: uint16][PublishPacket 바이트 (len 바이트)]
+ *   게이트웨이 → 디바이스 : PUBCOMP 4바이트 [len=4][type=7][msg_id: uint16]
+ * Header.length는 uint8라 264바이트 PublishPacket을 표현할 수 없으므로, TCP 스트림의
+ * 패킷 경계는 2바이트 길이 접두로 구분합니다.
+ *
+ * 1회 시도 = 연결 → 전송 → PUBCOMP 대기(최대 2.0초) → 연결 종료.
+ * 시도마다 연결하므로 TCP 핸드셰이크 시간이 RTT에 포함됩니다. (UDP 경로와 달리 연결 설정
+ * 비용이 있다는 점이 전송 계층 전환의 실제 비용이며, 연결을 유지하지 않아 Sleep과 충돌하지 않습니다.)
+ *
+ * 반환값: true = 올바른 msg_id의 PUBCOMP 수신 / false = 연결·전송 실패 또는 타임아웃
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static bool tcp_publish_and_wait_ack(const PublishPacket &pkt) {
+  WiFiClient tcp;
+  if (!tcp.connect(UDP_SERVER_IP, TCP_SERVER_PORT, 2000)) {
+    return false; // 연결 실패 (게이트웨이 다운, 포트 차단, 2.0초 타임아웃)
+  }
+  tcp.setNoDelay(true); // 작은 프레임을 Nagle 지연 없이 즉시 전송
+
+  // 길이 접두 + 본문을 한 번의 write로 보내 한 세그먼트로 묶습니다.
+  const uint16_t body_len = (uint16_t)publish_packet_size(pkt);
+  uint8_t frame[2 + sizeof(PublishPacket)];
+  frame[0] = (uint8_t)(body_len & 0xFF);
+  frame[1] = (uint8_t)(body_len >> 8);
+  memcpy(frame + 2, &pkt, body_len);
+  if (tcp.write(frame, 2u + body_len) != (size_t)(2u + body_len)) {
+    tcp.stop();
+    return false;
+  }
+
+  // PUBCOMP 4바이트 수신 대기 (최대 2.0초)
+  uint8_t ack[sizeof(PubCompPacket)];
+  size_t got = 0;
+  const unsigned long start_ms = millis();
+  while (got < sizeof(ack) && millis() - start_ms < 2000) {
+    if (tcp.available()) {
+      int n = tcp.read(ack + got, sizeof(ack) - got);
+      if (n > 0) got += (size_t)n;
+    } else if (!tcp.connected()) {
+      break;        // 게이트웨이가 응답 없이 연결을 닫음
+    } else {
+      delay(5);     // 5ms 폴링: CPU 점유와 응답성의 균형
+    }
+  }
+  tcp.stop();
+
+  if (got < sizeof(ack)) return false;
+  const PubCompPacket *comp = (const PubCompPacket *)ack;
+  return comp->header.msg_type == MsgType::PUBCOMP && comp->msg_id == pkt.msg_id;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * setup() — Arduino 초기화 진입점
  *
  * 실행 순서:
@@ -894,6 +921,16 @@ void setup() {
   Serial.println("║  Board 1: Gingerbread — TinyML MLP 엣지 AI 펌웨어 부팅   ║");
   Serial.println("║  아키텍처: MLP 신경망 추론 + FreeRTOS Mutex + MQTT-SN    ║");
   Serial.println("╚═══════════════════════════════════════════════════════════╝");
+
+  // 위험 점수 MLP 가중치의 출처를 매 부팅마다 명시합니다. 학습되지 않은 임시값으로 실험 데이터를
+  // 수집하면 결과가 "학습된 모델"의 것으로 오해될 수 있으므로 눈에 띄게 경고합니다.
+#if MLP_WEIGHTS_TRAINED
+  Serial.println("[MLP] 가중치: 학습된 값 (ml_model/train.py 생성)");
+#else
+  Serial.println("[MLP] ⚠ 경고: 가중치가 학습되지 않은 임시값입니다 (mlp_weights.h, MLP_WEIGHTS_TRAINED=0).");
+  Serial.println("[MLP] ⚠ 이 상태의 QoS 결정 결과를 학습 모델의 성능으로 보고하면 안 됩니다.");
+#endif
+  Serial.printf("[MLP] QoS 임계값: QoS1 >= %.3f | QoS2 >= %.3f\n", MLP_TH_QOS1, MLP_TH_QOS2);
 
   Wire.begin(BME_SDA_PIN, BME_SCL_PIN);
   if (!bme680.begin(bme680_i2c_address)) {
@@ -1107,13 +1144,38 @@ void loop() {
   const int max_retries         = 3;    // 최대 3회 재전송 제한
   bool      transaction_success = false;
   float     rtt_ms              = 0.0f; // PUBLISH~ACK 왕복 시간 (ms)
+  float     last_attempt_rtt_ms = -1.0f; // 마지막(성공한) 시도만의 RTT (ms). 혼잡도용, 알 수 없으면 -1
 
   // ── RTT 측정 시작점: PUBLISH 전송 직전 마이크로초 타임스탬프 캡처 ─────
   // micros()는 ESP32 부팅 후 경과 μs를 반환합니다.
   // 오버플로(약 71.6분 주기)는 부호 없는 정수 연산으로 자동 처리됩니다.
   unsigned long rtt_start_us = micros();
 
-  if (selected_qos == QoSLevel::QoS0) {
+  // 전송 계층 결정: 상위 QoS는 TCP, 나머지는 UDP (프로젝트 명세, TCP_MIN_QOS 참조)
+  const bool use_tcp = ((uint8_t)selected_qos >= TCP_MIN_QOS);
+  Serial.printf("[루프] 전송 계층: %s (QoS %d)\n", use_tcp ? "TCP" : "UDP", (int)selected_qos);
+
+  if (use_tcp) {
+    // ══════════════════════════════════════════════════════════════════════
+    // [TCP 신뢰성 모드] 상위 QoS — 수신 보장이 필수인 상황 (신경망 CRITICAL 판정)
+    // TCP가 전달·순서를 보장하고, 게이트웨이가 처리를 마친 뒤 PUBCOMP로 확인합니다.
+    // UDP 경로와 같은 재전송 정책(최대 3회, 2.0초 타임아웃)을 적용합니다.
+    // RTT: 최초 시도의 연결 시작 ~ PUBCOMP 수신 (연결 설정·재시도 대기 시간 포함).
+    // ══════════════════════════════════════════════════════════════════════
+    while (retry_count <= max_retries) {
+      if (tcp_publish_and_wait_ack(pub_pkt)) {
+        rtt_ms = (float)(micros() - rtt_start_us) / 1000.0f;
+        transaction_success = true;
+        Serial.printf("[TCP QoS %d] ✓ 성공 — PUBCOMP 수신 확인 | RTT: %.2f ms | 재전송: %d회 (MsgID: %u)\n",
+                      (int)selected_qos, rtt_ms, retry_count, pub_pkt.msg_id);
+        break;
+      }
+      retry_count++;
+      Serial.printf("[TCP QoS %d] ⚠ 실패/타임아웃 — 재전송 (%d/%d)\n",
+                    (int)selected_qos, retry_count, max_retries);
+    }
+
+  } else if (selected_qos == QoSLevel::QoS0) {
     // ══════════════════════════════════════════════════════════════════════
     // [QoS 0] 무확인 단발성 전송 — Fire and Forget
     // PUBACK를 기다리지 않고 즉시 Sleep 진입합니다.
@@ -1139,6 +1201,7 @@ void loop() {
     // ══════════════════════════════════════════════════════════════════════
     while (retry_count <= max_retries) {
       // PUBLISH 패킷 UDP 전송
+      const unsigned long attempt_start_us = micros(); // 이번 시도의 시작 (재전송 대기 시간이 섞이지 않는 RTT용)
       udp.beginPacket(UDP_SERVER_IP, UDP_SERVER_PORT);
       udp.write((uint8_t *)&pub_pkt, publish_packet_size(pub_pkt));
       udp.endPacket();
@@ -1147,6 +1210,7 @@ void loop() {
       if (wait_for_packet(MsgType::PUBACK, pub_pkt.msg_id)) {
         // ── RTT 측정 완료: 최초 PUBLISH 전송 시점 ~ PUBACK 수신 시점 ──
         rtt_ms = (float)(micros() - rtt_start_us) / 1000.0f;
+        last_attempt_rtt_ms = (float)(micros() - attempt_start_us) / 1000.0f;
         transaction_success = true;
         Serial.printf("[QoS 1] ✓ 성공 — PUBACK 수신 확인 | RTT: %.2f ms | 재전송: %d회 (MsgID: %u)\n",
                       rtt_ms, retry_count, pub_pkt.msg_id);
@@ -1233,6 +1297,21 @@ void loop() {
   // │ [2026-06 추가] packet_count, total_bytes, sleep_mode_ratio 누적     │
   // └─────────────────────────────────────────────────────────────────────┘
 
+  // ── 혼잡도 추적기 갱신 (net_congestion.h) ───────────────────────────────
+  // ACK를 받는 전송(QoS 1, TCP)의 결과만 손실/지연을 관측할 수 있습니다. QoS 0은 관측이 없으므로 idle로 세어
+  // 일정 횟수가 지나면 프로브(QoS 1)를 보냅니다. 실패한 시도 수 = 재전송 횟수입니다.
+  // (참고: UDP QoS 2 4단계 경로는 2단계 실패 시 재전송 횟수가 합산되지 않아 손실이 약간 적게 잡힙니다.)
+  // RTT는 UDP QoS 1의 마지막 시도만 씁니다: TCP는 연결 설정 시간이 섞이고, 재전송 타임아웃은 지연이 아닙니다.
+  if (selected_qos != QoSLevel::QoS0) {
+    const uint32_t failed_attempts = (uint32_t)retry_count;
+    const uint32_t total_attempts  = failed_attempts + (transaction_success ? 1u : 0u);
+    const float rtt_sample = (!use_tcp && selected_qos == QoSLevel::QoS1 && transaction_success)
+                                 ? last_attempt_rtt_ms : -1.0f;
+    net_observe(g_net, total_attempts, failed_attempts, rtt_sample, g_loss_limit);
+  } else {
+    net_on_idle_cycle(g_net);
+  }
+
   // ── 활성 구간 경과 시간 계산 (Sleep 직전까지의 활성 시간) ────────────────
   // 사이클 시작(loop 진입) ~ DISCONNECT 전송 직전까지를 활성 시간으로 정의합니다.
   unsigned long active_elapsed_ms = millis() - cycle_start_ms;
@@ -1284,7 +1363,8 @@ void loop() {
              "{\"temp\":%.2f,\"hum\":%.2f,\"gas\":%.2f,"
              "\"battery\":%.0f,\"nn\":%.3f,\"qos\":%d,"
              "\"rtt\":%.2f,\"retry\":%d,\"sleep_r\":%.4f,"
-             "\"act\":%lu,\"slp\":%lu,"
+             "\"act\":%lu,\"slp\":%lu,\"tp\":\"%s\","
+             "\"ls\":%.1f,\"rr\":%.2f,\"cg\":%d,\"pb\":%d,"
              "\"pkt\":%u,\"bytes\":%u}",
              sensor_data.temp, sensor_data.hum, sensor_data.gas_kohm,
              sensor_data.battery_pct, nn_score,
@@ -1294,6 +1374,11 @@ void loop() {
              sleep_mode_ratio, // 누적 Sleep 비율 (참고용)
              (unsigned long)active_elapsed_ms,  // 이번 사이클 활성 시간 (ms) — 전력 추정에 사용
              (unsigned long)SLEEP_DURATION_MS,  // 이번 사이클 Sleep 시간 (ms) — 전력 추정에 사용
+             use_tcp ? "tcp" : "udp",           // 이번 트랜잭션의 전송 계층
+             g_net.loss_pct,                    // 혼잡도: 손실률 EWMA (%)
+             net_rtt_ratio(g_net),              // 혼잡도: 평소 대비 지연 배율 (1.0 = 평소)
+             g_net.degraded ? 1 : 0,            // 혼잡 상태 여부 (히스테리시스 적용)
+             g_probe_this_cycle ? 1 : 0,        // 이번 사이클이 관측용 QoS 1 프로브였는가
              g_packet_count, g_total_bytes);
 
     udp.beginPacket(UDP_SERVER_IP, UDP_SERVER_PORT);

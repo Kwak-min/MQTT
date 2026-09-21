@@ -5,7 +5,21 @@
 ## 노드 아키텍처 (Node Architecture)
 본 시스템은 A/B 테스트 및 성능 평가를 위해 두 개의 독립적인 ESP32-S3 펌웨어 노드로 구성되어 있습니다:
 *   **Node 1: Gingerbread (제안 시스템)**
-    *   특징: 동적 QoS 조정을 위한 TinyML 기반 추론 엔진 탑재, 커스텀 MQTT-SN over UDP 프로토콜 사용.
+    *   특징: 동적 QoS 조정을 위한 TinyML 기반 추론 엔진 탑재, 커스텀 MQTT-SN 프로토콜 사용.
+    *   **가변 전송 계층 (QoS에 따라 UDP/TCP 자동 전환)**:
+        *   QoS 0·1 (저전력 모드): 오버헤드가 적은 **UDP** (게이트웨이 포트 5000)
+        *   상위 QoS = QoS 2 (신뢰성 모드): **TCP** (게이트웨이 포트 5001). 수신 보장이 필수인 상황(신경망 CRITICAL 판정)에서 사용
+        *   전환 기준은 펌웨어의 `TCP_MIN_QOS`(기본 2)로 조정합니다. 3으로 올리면 모든 QoS가 UDP로 처리됩니다.
+        *   TCP 프레임: `[길이 uint16][PublishPacket]`, 게이트웨이는 처리 후 `PUBCOMP` 4바이트로 응답합니다. 연결은 시도마다 열고 닫습니다.
+        *   설정 동기화(`gingerbread/config` 구독)는 QoS와 무관하게 별도의 표준 MQTT(TCP) 연결을 사용합니다.
+    *   **QoS 결정 = max(환경 위험 QoS, 네트워크 QoS)**: 신경망이 센서값으로 환경 위험 QoS(0/1/2)를 정하고, 네트워크가
+        불안정하면(RSSI가 임계값 미만 **또는 실측 혼잡**) QoS를 최소 1로 올립니다. 네트워크는 QoS를 최대 1까지만 올리며
+        QoS 2(TCP)는 환경 위험 전용입니다.
+    *   **네트워크 혼잡도** (`firmware/include/net_congestion.h`): RSSI는 신호 세기일 뿐 혼잡도가 아니므로, ACK를 받는
+        전송(QoS 1, TCP)의 실측 결과로 판단합니다. 전송 시도별 손실률(지수이동평균)이 `PACKET_LOSS_LIMIT`(설정, 기본 5%)을
+        넘거나, 지연이 평소 최저 RTT의 3배를 넘으면 혼잡으로 판정하고 히스테리시스(손실 상한의 절반 미만 + 지연 2배 미만이어야 해제)를 둡니다.
+        QoS 0은 ACK가 없어 관측할 수 없으므로 24사이클(약 2분)마다 QoS 1 프로브를 보내고, 실패가 관측되면 잠시 촘촘히 관측합니다.
+        모든 상수는 가정값이며 실제 네트워크에서 보정해야 합니다 (`firmware/test/test_net_congestion.py`로 동작 검증).
     *   소스 파일: `firmware/src/main_gingerbread.cpp`
 *   **Node 2: 베이스라인 (표준 시스템)**
     *   특징: 고정된 QoS 1 (Publish/PubAck) 방식을 사용하는 표준 MQTT over TCP 기반.
