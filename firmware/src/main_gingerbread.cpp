@@ -1017,6 +1017,10 @@ void loop() {
   // 이 시점부터 DISCONNECT 전송 직전까지를 활성 구간으로 평가합니다.
   unsigned long cycle_start_ms = millis();
 
+  // 이번 사이클 말미의 Sleep 시간(ms). 게이트웨이 전력 추정용 텔레메트리("slp")에도 쓰이므로
+  // 전송 전에 확정되어 있어야 합니다.
+  const uint32_t SLEEP_DURATION_MS = 5000;
+
   // ┌─────────────────────────────────────────────────────────────────────┐
   // │ 2단계: 이중 전원 모드 센서 입력 전처리                               │
   // │ POWER_MODE에 따라 battery_pct의 데이터 소스가 결정됩니다.            │
@@ -1080,7 +1084,7 @@ void loop() {
   snprintf(pub_pkt.payload, sizeof(pub_pkt.payload),
            "{\"temp\":%.2f,\"hum\":%.2f,\"gas\":%.2f,"
            "\"battery\":%.0f,\"nn\":%.3f,\"qos\":%d,"
-           "\"rtt\":0.0,\"retry\":0,\"sleep_r\":%.3f}",
+           "\"sleep_r\":%.3f}",
            sensor_data.temp,
            sensor_data.hum,
            sensor_data.gas_kohm,
@@ -1088,10 +1092,9 @@ void loop() {
            nn_score,
            (int)selected_qos,
            current_sleep_ratio);
-  // 주: rtt와 retry는 이 시점에 아직 0(실제 ACK 후 계산)——게이트웨이는 패킷 평균값으로
-  // sleep_r로 전력을 주로 추정합니다. 다음 루프에서 실제 RTT/retry가 DISCONNECT
-  // 직전에 페이로드를 업데이트하는 방식 도입 가능. 현재는 심플리티를 위해
-  // rtt/retry는 DISCONNECT 패킷의 페이로드를 별도 업데이트하지 않습니다.
+  // 주: 이 PUBLISH는 핸드셰이크 "이전"에 만들어지므로 RTT/retry를 담을 수 없습니다.
+  // 게이트웨이는 이 패킷으로 전력을 추정하지 않습니다. 실측 RTT/retry와 사이클 활성/Sleep
+  // 시간은 핸드셰이크 완료 후 6단계에서 보내는 topic 2 텔레메트리 패킷에 담깁니다.
 
   Serial.printf("[루프] PUBLISH 페이로드 (MsgID=%u): %s\n",
                 pub_pkt.msg_id, pub_pkt.payload);
@@ -1281,13 +1284,16 @@ void loop() {
              "{\"temp\":%.2f,\"hum\":%.2f,\"gas\":%.2f,"
              "\"battery\":%.0f,\"nn\":%.3f,\"qos\":%d,"
              "\"rtt\":%.2f,\"retry\":%d,\"sleep_r\":%.4f,"
+             "\"act\":%lu,\"slp\":%lu,"
              "\"pkt\":%u,\"bytes\":%u}",
              sensor_data.temp, sensor_data.hum, sensor_data.gas_kohm,
              sensor_data.battery_pct, nn_score,
              (int)selected_qos,
              rtt_ms,           // 실측 RTT (핸드셰이크 완료 후 확정)
              retry_count,      // 실제 재전송 횟수
-             sleep_mode_ratio, // 실제 Sleep 비율
+             sleep_mode_ratio, // 누적 Sleep 비율 (참고용)
+             (unsigned long)active_elapsed_ms,  // 이번 사이클 활성 시간 (ms) — 전력 추정에 사용
+             (unsigned long)SLEEP_DURATION_MS,  // 이번 사이클 Sleep 시간 (ms) — 전력 추정에 사용
              g_packet_count, g_total_bytes);
 
     udp.beginPacket(UDP_SERVER_IP, UDP_SERVER_PORT);
@@ -1325,7 +1331,6 @@ void loop() {
   // 실제 esp_deep_sleep_start() 사용 시 이 지점 이후 코드는 실행되지 않으며,
   // Deep Sleep에서 깨어나면 setup()부터 재시작됩니다.
   // 현재는 delay()로 경량 시뮬레이션 Sleep을 사용합니다.
-  const uint32_t SLEEP_DURATION_MS = 5000;
   g_total_sleep_ms += SLEEP_DURATION_MS;
 
   // 배포 환경에서는 delay()를 esp_deep_sleep_start()로 교체하면
