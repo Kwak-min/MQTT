@@ -93,31 +93,55 @@ def main() -> None:
     def on_disconnect(packet: DisconnectPacket) -> None:
         session_svc.on_disconnect(packet)
 
+    def resolve_client_id(packet: PublishPacket):
+        """발신자 주소로 세션 테이블에서 client_id를 조회합니다 (없으면 None)."""
+        for sess in session_svc.get_all():
+            if sess["addr_ip"] == packet.addr[0] and sess["addr_port"] == packet.addr[1]:
+                return sess["client_id"]
+        return None
+
     def on_env_deliver(packet: PublishPacket) -> None:
         """
         PUBLISH가 확인되면(모든 QoS 수준) QoSHandler에 의해 호출됩니다.
         로깅하기 전에 세션 테이블에서 client_id를 확인합니다.
-        """
-        # 발신자 주소로 세션 테이블에서 client_id 확인
-        client_id = None
-        for sess in session_svc.get_all():
-            if sess["addr_ip"] == packet.addr[0] and sess["addr_port"] == packet.addr[1]:
-                client_id = sess["client_id"]
-                break
 
+        전력 추정은 여기서 하지 않습니다. 이 패킷(topic 1)은 핸드셰이크 이전에 만들어져
+        RTT/retry가 아직 없으므로, 실측값이 담긴 topic 2 패킷(on_gingerbread_telemetry)에서
+        추정합니다.
+        """
         session_svc.increment_packet_count(packet.addr)
-        telemetry_svc.record_env_telemetry(packet, client_id=client_id)
+        telemetry_svc.record_env_telemetry(
+            packet, client_id=resolve_client_id(packet), estimate_power=False,
+        )
+
+    def on_gingerbread_telemetry(packet: PublishPacket) -> None:
+        """
+        Gingerbread가 핸드셰이크 완료 후 보내는 topic 2 패킷(실측 RTT/retry/사이클 시간)으로
+        전력을 추정합니다.
+        """
+        telemetry_svc.record_power_metrics(packet, client_id=resolve_client_id(packet))
 
     def on_power(packet: PowerPacket) -> None:
         """모든 전력 MCU 스트리밍 패킷에 대해 호출됩니다."""
         telemetry_svc.record_power_telemetry(packet)
 
+    STANDARD_CLIENT_ID = "ESP32-Standard-MQTT"
+
     def on_standard_telemetry(packet: PublishPacket) -> None:
-        """Board 2 MQTT 텔레메트리를 기존 환경 CSV 경로로 전달합니다."""
+        """
+        Board 2 MQTT 센서 데이터를 기존 환경 CSV 경로로 전달합니다.
+        전력 추정은 하지 않습니다: 이 메시지는 발행 이전에 만들어져 RTT/retry가 없으므로,
+        실측값이 담긴 메트릭 메시지(on_standard_metrics)에서 추정합니다.
+        """
         telemetry_svc.record_env_telemetry(
             packet,
-            client_id="ESP32-Standard-MQTT",
+            client_id=STANDARD_CLIENT_ID,
+            estimate_power=False,
         )
+
+    def on_standard_metrics(packet: PublishPacket) -> None:
+        """Board 2가 QoS 1 발행 후 보내는 실측 RTT/retry 메트릭으로 전력을 추정합니다."""
+        telemetry_svc.record_power_metrics(packet, client_id=STANDARD_CLIENT_ID)
 
     # ──────────────────────────────────────────────────────────────────────────
     # 3. UDP 리스너
@@ -128,6 +152,7 @@ def main() -> None:
         on_connect=on_connect,
         on_disconnect=on_disconnect,
         on_deliver=on_env_deliver,
+        on_telemetry=on_gingerbread_telemetry,
     )
 
     power_listener = PowerListener(
@@ -140,6 +165,7 @@ def main() -> None:
         host=MQTT_BROKER_HOST,
         port=MQTT_BROKER_PORT,
         on_telemetry=on_standard_telemetry,
+        on_metrics=on_standard_metrics,
     )
 
     gingerbread_listener.start()
