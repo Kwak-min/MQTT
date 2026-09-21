@@ -393,6 +393,19 @@ class TelemetryService:
         packet_count     = int(_num("pkt",   0.0))
         total_bytes      = int(_num("bytes", 0.0))
 
+        # 전송 계층: 펌웨어가 이번 트랜잭션에 실제로 사용한 프로토콜 ("tcp" | "udp").
+        # Gingerbread는 QoS에 따라 바뀌고, Standard는 항상 tcp입니다. 구버전 펌웨어는 필드가 없어 "unknown".
+        transport = payload.get("tp")
+        if transport not in ("tcp", "udp"):
+            transport = "unknown"
+
+        # 네트워크 혼잡도 (Gingerbread 펌웨어의 net_congestion.h가 계산): 손실률 EWMA(%), 평소 대비 지연 배율,
+        # 혼잡 상태 여부, 관측용 QoS 1 프로브 사이클 여부. 구버전 펌웨어/Standard 노드는 필드가 없어 None입니다.
+        net_loss_pct = _coerce_float(payload.get("ls"), "ls", addr)
+        rtt_ratio = _coerce_float(payload.get("rr"), "rr", addr)
+        congested = None if payload.get("cg") is None else bool(payload.get("cg"))
+        probe = None if payload.get("pb") is None else bool(payload.get("pb"))
+
         act_ms = _coerce_float(payload.get("act"), "act", addr)
         slp_ms = _coerce_float(payload.get("slp"), "slp", addr)
         if act_ms is not None and slp_ms is not None:
@@ -453,6 +466,11 @@ class TelemetryService:
             snap["sleep_energy_mwh"]     = cycle["sleep_energy_mwh"]
             snap["average_current_ma"]   = cycle["average_current_ma"]
             snap["efficiency_gain_pct"]  = cycle["efficiency_gain_pct"]
+            snap["transport"]            = transport
+            snap["net_loss_pct"]         = net_loss_pct
+            snap["rtt_ratio"]            = rtt_ratio
+            snap["congested"]            = congested
+            snap["probe"]                = probe
             snap["rtt_ms"]               = rtt_ms
             snap["retry_count"]          = retry_count
             snap["sleep_mode_ratio"]     = sleep_mode_ratio
@@ -461,10 +479,10 @@ class TelemetryService:
 
         logger.info(
             "[\uc804\ub825\ucd94\uc815] client='%s' QoS=%d | RTT=%.2f ms | retry=%d | "
-            "active=%.0f ms | sleep=%.0f ms | energy=%.8f mWh "
+            "active=%.0f ms | sleep=%.0f ms | transport=%s | energy=%.8f mWh "
             "(tx/rx %.8f + idle %.8f + sleep %.8f)",
             client_id, qos, rtt_ms, retry_count,
-            active_ms, sleep_ms, estimated_energy_mwh,
+            active_ms, sleep_ms, transport, estimated_energy_mwh,
             cycle["active_energy_mwh"], cycle["idle_energy_mwh"], cycle["sleep_energy_mwh"],
         )
 
