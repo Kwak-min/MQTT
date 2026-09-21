@@ -15,23 +15,29 @@
  * │ [2026-06 리팩토링] 소프트웨어 정의 전력 추정 메트릭 추가                │
  * │   하드웨어 INA219 Board 3을 제거하고, Board 2도 아래 5가지 성능 지표를  │
  * │   수집·전송하여 게이트웨이에서 IEEE Access 2024 기반 전력을 추정합니다:  │
- * │   1. RTT (rtt_ms)       : publish() 전후 millis() 기반 왕복 시간 (ms)  │
- * │   2. retry_count        : publish() 실패 시 재시도 횟수                 │
+ * │   1. RTT (rtt_ms)       : QoS 1 PUBLISH~PUBACK 실제 왕복 시간 (ms)      │
+ * │   2. retry_count        : PUBACK 미수신 시 재전송 횟수 (최대 3회)        │
  * │   3. sleep_mode_ratio   : delay(INTERVAL)을 Sleep으로 간주한 비율       │
  * │   4. packet_count       : 누적 전송 성공 패킷 수                        │
  * │   5. total_bytes        : 누적 전송 바이트 수                           │
  * └─────────────────────────────────────────────────────────────────────────┘
  *
  * 의존 라이브러리 (platformio.ini [env:board2_standard] 참조):
- *   - knolleary/PubSubClient  @ ^2.8   : 표준 MQTT 브로커 통신
+ *   - 256dpi/MQTT             @ ^2.5.3 : 표준 MQTT 브로커 통신 (QoS 1 지원)
  *   - bblanchon/ArduinoJson   @ ^7.0   : JSON 페이로드 직렬화
+ *
+ * [라이브러리 선택 근거]
+ *   기존 PubSubClient는 publish()가 QoS 0만 지원하여(PUBLISH 헤더의 QoS 비트가 항상 0,
+ *   PUBACK 대기 코드 없음) "고정 QoS 1 베이스라인"이 성립하지 않았습니다.
+ *   256dpi/MQTT의 publish(topic, payload, retained, qos=1)는 PUBACK 수신(또는 타임아웃)
+ *   까지 블로킹하고 실패 시 false를 반환합니다.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
-#include <PubSubClient.h>
+#include <MQTT.h>
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <Adafruit_BME680.h>
@@ -49,6 +55,15 @@ static const char *CLIENT_ID = "ESP32-Standard-MQTT";
 
 // 발행할 MQTT 토픽
 static const char *TOPIC = "environmental/standard";
+
+// 핸드셰이크 완료 후 실측 RTT/retry를 담아 보내는 메트릭 토픽 (QoS 0).
+// Gingerbread의 topic_id=2 텔레메트리 패킷과 같은 역할입니다: PUBLISH 페이로드는
+// 발행 "이전"에 만들어지므로 이번 사이클의 RTT를 담을 수 없기 때문입니다.
+static const char *METRICS_TOPIC = "environmental/standard/metrics";
+
+// Gingerbread와 동일한 재전송 조건 (비교 공정성)
+static const int MAX_RETRIES    = 3;     // 최초 시도 + 최대 3회 재전송
+static const int ACK_TIMEOUT_MS = 2000;  // PUBACK 대기 타임아웃 (Gingerbread wait_for_packet과 동일)
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * [섹션 B] 전송 주기 및 BME680 센서
@@ -81,14 +96,15 @@ static bool read_bme680() {
  * IEEE Access 2024 (DOI: 10.1109/ACCESS.2024.3523864) 기반 전력 추정을 위해
  * 아래 전역 변수로 루프 사이클 간 누적 상태를 추적합니다.
  *
- * Board 2는 PubSubClient를 사용하므로 QoS 1 PUBACK 확인은 라이브러리가 내부
- * 처리합니다. RTT는 publish() 호출 전후 millis()로 근사 측정합니다.
+ * Board 2는 256dpi/MQTT의 QoS 1 publish()를 사용합니다. 이 호출은 PUBACK을 받을
+ * 때까지 블로킹하므로, 최초 시도 시점부터 성공 반환까지를 micros()로 재면
+ * Gingerbread(최초 PUBLISH~PUBACK 수신)와 같은 기준의 실제 RTT가 됩니다.
  *
  * [Complexity Column 평가 지표 — Board 2 (베이스라인)]
  * | 지표                   | 값                         |
  * |------------------------|----------------------------|
  * | AI 추론               | 없음 (고정 QoS 1)           |
- * | RTT 측정 방법          | millis() 근사 (라이브러리 내부 처리)|
+ * | RTT 측정 방법          | micros() — 실제 PUBACK 수신까지|
  * | Flash 추가 사용량      | ≈ 0 bytes (추론 없음)       |
  * | SRAM 추가 사용량       | ≈ 0 bytes (추론 없음)       |
  * | 추론 지연              | 없음                        |
@@ -97,12 +113,11 @@ static uint32_t g_packet_count    = 0;  // 누적 발행 성공 패킷 수
 static uint32_t g_total_bytes     = 0;  // 누적 전송 바이트 수 (JSON 페이로드 기준)
 static uint32_t g_total_active_ms = 0;  // 누적 활성(awake) 경과 시간 (ms)
 static uint32_t g_total_sleep_ms  = 0;  // 누적 delay() 경과 시간 (ms)
-static int g_retry_count = 0;           // 현재 사이클 재시도 횟수
-static float g_last_rtt_ms = 0.0f;      // 직전 MQTT 발행 RTT (ms)
 
 /* ─── 클라이언트 객체 초기화 ────────────────────────────────────────────── */
-static WiFiClient   espClient;
-static PubSubClient client(espClient);
+static WiFiClient  espClient;
+// 읽기/쓰기 버퍼 512바이트 (기본값 128은 센서 페이로드 + 토픽에 부족)
+static MQTTClient  client(512);
 
 /* 주기 타이밍 추적 변수 */
 static unsigned long lastMsg = 0;
@@ -130,13 +145,23 @@ static void setup_wifi() {
 /* ═══════════════════════════════════════════════════════════════════════════
  * MQTT 브로커 재연결 함수 (블로킹)
  * ═══════════════════════════════════════════════════════════════════════════ */
+// 1회 연결 시도. 성공하면 true.
+// 256dpi/MQTT는 발행이 실패하면 연결을 스스로 닫으므로, 재전송 루프에서도 이 함수로 재연결합니다.
+static bool mqtt_connect_once() {
+  Serial.printf("[MQTT] 브로커 연결 시도 (클라이언트 ID: %s)\n", CLIENT_ID);
+  if (client.connect(CLIENT_ID)) {
+    Serial.println("[MQTT] ✓ 브로커 페어링 성공!");
+    return true;
+  }
+  Serial.printf("[MQTT] ⚠ 연결 실패 (lastError=%d, returnCode=%d)\n",
+                (int)client.lastError(), (int)client.returnCode());
+  return false;
+}
+
 static void reconnect() {
   while (!client.connected()) {
-    Serial.printf("[MQTT] 브로커 연결 시도 (클라이언트 ID: %s)\n", CLIENT_ID);
-    if (client.connect(CLIENT_ID)) {
-      Serial.println("[MQTT] ✓ 브로커 페어링 성공!");
-    } else {
-      Serial.printf("[MQTT] ⚠ 연결 실패 (rc=%d) — 5초 후 재시도\n", client.state());
+    if (!mqtt_connect_once()) {
+      Serial.println("[MQTT] 5초 후 재시도");
       delay(5000);
     }
   }
@@ -174,7 +199,8 @@ void setup() {
   Serial.printf("[BME680] 실제 센서 초기화 완료 (SDA=%d, SCL=%d, 주소=0x%02X)\n",
                 BME_SDA_PIN, BME_SCL_PIN, bme680_i2c_address);
 
-  client.setServer(MQTT_BROKER_IP, MQTT_BROKER_PORT);
+  client.begin(MQTT_BROKER_IP, MQTT_BROKER_PORT, espClient);
+  client.setTimeout(ACK_TIMEOUT_MS); // QoS 1 PUBACK 대기 한도
   Serial.printf("[설정] MQTT 브로커: %s:%u | 토픽: %s\n",
                 MQTT_BROKER_IP, MQTT_BROKER_PORT, TOPIC);
   Serial.println("[부팅] ══ 초기화 완료, 표준 MQTT 메인 루프 시작 ══\n");
@@ -227,39 +253,45 @@ void loop() {
     sleep_mode_ratio = (float)g_total_sleep_ms / (float)total_elapsed;
   }
 
-  // ── 4단계: 성능 메트릭 조립 + JSON 페이로드 직렬화 ────────────────────
-  // Board 1(Gingerbread)과 동일한 JSON 구조 사용 (비교 공정성)
+  // ── 4단계: 센서 페이로드 직렬화 ────────────────────────────────────────
+  // 이 페이로드는 발행 "이전"에 만들어지므로 이번 사이클의 RTT/retry를 담을 수 없습니다.
+  // 실측 값은 5단계 이후 별도 메트릭 메시지(METRICS_TOPIC)로 보냅니다.
+  // (이전 사이클의 RTT를 실어 보내던 기존 방식은 한 사이클씩 어긋난 값이었습니다.)
   char payload[200];
   snprintf(payload, sizeof(payload),
            "{\"temp\":%.2f,\"hum\":%.2f,\"gas\":%.2f,"
-           "\"qos\":%d,\"rtt\":%.2f,\"retry\":%d,\"sleep_r\":%.3f,"
-           "\"pkt\":%u,\"bytes\":%u}",
+           "\"qos\":%d,\"sleep_r\":%.3f}",
            sensor_temp, sensor_hum, sensor_gas,
            FIXED_QOS,
-           g_last_rtt_ms,
-           g_retry_count,     // 이전 사이클 재시도 횟수 (현 사이클은 발행 후 결정)
-           sleep_mode_ratio,
-           g_packet_count,
-           g_total_bytes);
-
-  g_retry_count = 0; // 새 사이클 시작 전 재시도 카운터 초기화
+           sleep_mode_ratio);
 
   Serial.printf("[전송] 토픽: %s\n[데이터] %s\n", TOPIC, payload);
 
-  // ── 5단계: RTT 측정 + QoS 1 발행 ──────────────────────────────────────
-  // PubSubClient는 MQTT QoS 1 PUBACK를 내부적으로 처리합니다.
-  // publish() 전후 millis()로 라이브러리 레벨 왕복 시간을 근사 측정합니다.
-  // 주의: PubSubClient의 publish()는 논블로킹으로 동작하므로 실제 PUBACK
-  // 수신 시점이 아닌 스택 반환 시점을 RTT 종점으로 사용합니다.
-  unsigned long rtt_start_ms = millis();
-  bool publish_ok = client.publish(TOPIC, payload, false); // retained=false
-  client.loop(); // 발행 패킷을 네트워크 스택으로 flush하고 응답 처리
-  unsigned long rtt_end_ms   = millis();
-  float rtt_ms = (float)(rtt_end_ms - rtt_start_ms);
-  if (rtt_ms <= 0.0f) {
-    rtt_ms = 1.2f;
+  // ── 5단계: QoS 1 발행 + 실제 PUBACK RTT 측정 ─────────────────────────
+  // client.publish(..., qos=1)은 PUBACK을 받을 때까지(최대 ACK_TIMEOUT_MS) 블로킹하고,
+  // 실패하면 false를 반환하며 연결을 스스로 닫습니다. 따라서 실패 시 재연결 후 재전송합니다.
+  // RTT는 Gingerbread와 같은 기준입니다: 최초 PUBLISH 전송 ~ PUBACK 수신
+  // (재전송 대기·재연결 시간 포함).
+  int   retry_count = 0;
+  bool  publish_ok  = false;
+  float rtt_ms      = 0.0f;
+
+  unsigned long rtt_start_us = micros();
+  while (retry_count <= MAX_RETRIES) {
+    if (!client.connected() && !mqtt_connect_once()) {
+      retry_count++;
+      Serial.printf("[QoS 1] ⚠ 재연결 실패 (%d/%d)\n", retry_count, MAX_RETRIES);
+      continue;
+    }
+    if (client.publish(TOPIC, payload, false, FIXED_QOS)) { // retained=false, qos=1
+      rtt_ms     = (float)(micros() - rtt_start_us) / 1000.0f;
+      publish_ok = true;
+      break;
+    }
+    retry_count++;
+    Serial.printf("[QoS 1] ⚠ PUBACK 미수신 — PUBLISH 재전송 (%d/%d, lastError=%d)\n",
+                  retry_count, MAX_RETRIES, (int)client.lastError());
   }
-  g_last_rtt_ms = rtt_ms;
 
   // ── 6단계: 전송 결과 처리 및 메트릭 누적 ──────────────────────────────
   if (publish_ok) {
@@ -270,15 +302,26 @@ void loop() {
     unsigned long active_elapsed = millis() - cycle_start_ms;
     g_total_active_ms += (uint32_t)active_elapsed;
 
-    Serial.printf("[결과] ✓ QoS 1 발행 성공 | RTT(근사): %.1f ms | Sleep비율: %.1f%%\n"
+    Serial.printf("[결과] ✓ QoS 1 발행 성공 | PUBACK RTT: %.2f ms | 재전송: %d회 | Sleep비율: %.1f%%\n"
                   "       누적 패킷: %u | 누적 바이트: %u\n",
-                  rtt_ms, sleep_mode_ratio * 100.0f,
+                  rtt_ms, retry_count, sleep_mode_ratio * 100.0f,
                   g_packet_count, g_total_bytes);
+
+    // ── 실측 메트릭 메시지 (QoS 0) ──────────────────────────────────────
+    // Gingerbread의 topic_id=2 텔레메트리 패킷과 같은 역할입니다.
+    // act/slp: Board 2는 무선을 항상 켜 두므로 사이클 전체(PUBLISH_INTERVAL_MS)가 활성 구간입니다.
+    char metrics[200];
+    snprintf(metrics, sizeof(metrics),
+             "{\"qos\":%d,\"rtt\":%.2f,\"retry\":%d,\"sleep_r\":%.4f,"
+             "\"act\":%lu,\"slp\":0,\"pkt\":%u,\"bytes\":%u}",
+             FIXED_QOS, rtt_ms, retry_count, sleep_mode_ratio,
+             (unsigned long)PUBLISH_INTERVAL_MS,
+             g_packet_count, g_total_bytes);
+    client.publish(METRICS_TOPIC, metrics, false, 0);
+    Serial.printf("[메트릭] %s\n", metrics);
   } else {
-    // 발행 실패: retry_count 증가
-    g_retry_count++;
-    Serial.printf("[결과] ✗ 발행 실패 (재시도 #%d) — 네트워크 스택 확인 필요\n",
-                  g_retry_count);
+    // 최대 재전송 횟수 초과: 이번 사이클은 실패로 처리하고 다음 사이클에서 다시 시도합니다.
+    Serial.printf("[결과] ✗ QoS 1 발행 최종 실패 — 재전송 한도(%d회) 초과\n", MAX_RETRIES);
   }
 
   // ── 7단계: Sleep 시간 누적 ────────────────────────────────────────────
