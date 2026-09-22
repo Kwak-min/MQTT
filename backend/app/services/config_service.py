@@ -10,19 +10,23 @@ Gingerbread 프로젝트 — 동적 설정 관리 및 MQTT 게이트웨이 동�
 
 설정 파일 구조 (config.json):
   {
-    "NETWORK": {
-      "RSSI_THRESHOLD": -80,         // RSSI 신호 강도 임계값 (dBm)
-      "PACKET_LOSS_LIMIT": 5         // 허용 패킷 손실률 상한 (%)
-    },
     "ENVIRONMENT": {
-      "GAS_THRESHOLD_KOHM": 20,      // BME680 가스 저항 위험 임계값 (kΩ)
-      "TEMP_THRESHOLD_CELSIUS": 45   // 온도 위험 임계값 (°C)
+      "TEMP_WARN_C": 30,             // 온도 경고 임계값 (°C) — 이 값 이하면 QoS 0
+      "TEMP_DANGER_C": 50,           // 온도 위험 임계값 (°C) — 초과하면 QoS 2
+      "HUM_WARN_PCT": 70,            // 습도 경고 임계값 (%) — 이 값 이하면 QoS 0
+      "HUM_DANGER_PCT": 85           // 습도 위험 임계값 (%) — 초과하면 QoS 2
     },
     "POWER_MANAGEMENT": {
       "POWER_MODE": "EXTERNAL_5V",   // 전원 모드 ("EXTERNAL_5V" | "BATTERY")
       "CURRENT_BATTERY_LEVEL": 100   // 현재 배터리 잔량 (0~100 정수)
     }
   }
+
+  ESP32 펌웨어(main_gingerbread.cpp)는 QoS를 온도·습도 임계값으로만 판단합니다
+  (INSTRUCTIONS.md의 Gingerbread Protocol 참조). NETWORK 섹션(RSSI/패킷 손실)과
+  구 ENVIRONMENT 필드(GAS_THRESHOLD_KOHM/TEMP_THRESHOLD_CELSIUS)는 펌웨어가 더 이상
+  구독하지 않으므로 제거했습니다 — 남겨 두면 "설정은 있지만 아무 효과가 없는" 죽은
+  설정이 됩니다.
 
 MQTT 발행 규격:
   - 토픽  : gingerbread/config
@@ -56,13 +60,11 @@ logger = logging.getLogger(__name__)
 # 기본 설정값 — config.json이 없거나 손상된 경우 사용하는 폴백(fallback) 값
 # ──────────────────────────────────────────────────────────────────────────────
 _DEFAULT_CONFIG: Dict[str, Any] = {
-    "NETWORK": {
-        "RSSI_THRESHOLD": -80,        # RSSI 신호 강도 임계값 (dBm 단위, 기본값 -80)
-        "PACKET_LOSS_LIMIT": 5,       # 패킷 손실률 허용 상한 (%, 기본값 5)
-    },
     "ENVIRONMENT": {
-        "GAS_THRESHOLD_KOHM": 20,     # 가스 저항 위험 임계값 (kΩ, 기본값 20)
-        "TEMP_THRESHOLD_CELSIUS": 45, # 온도 위험 임계값 (°C, 기본값 45)
+        "TEMP_WARN_C": 30,     # 온도 경고 임계값 (°C) — 펌웨어 기본값과 동일
+        "TEMP_DANGER_C": 50,   # 온도 위험 임계값 (°C) — 펌웨어 기본값과 동일
+        "HUM_WARN_PCT": 70,    # 습도 경고 임계값 (%) — 펌웨어 기본값과 동일
+        "HUM_DANGER_PCT": 85,  # 습도 위험 임계값 (%) — 펌웨어 기본값과 동일
     },
     "POWER_MANAGEMENT": {
         "POWER_MODE": "EXTERNAL_5V",  # 전원 모드 기본값 (외부 5V 공급)
@@ -235,17 +237,16 @@ class ConfigService:
         updates : 변경할 파라미터 딕셔너리.
           지원 형식 1 (플랫 구조):
             {
-              "RSSI_THRESHOLD": -75,
-              "PACKET_LOSS_LIMIT": 3,
-              "GAS_THRESHOLD_KOHM": 15,
-              "TEMP_THRESHOLD_CELSIUS": 50,
+              "TEMP_WARN_C": 28,
+              "TEMP_DANGER_C": 45,
+              "HUM_WARN_PCT": 65,
+              "HUM_DANGER_PCT": 80,
               "POWER_MODE": "BATTERY",
               "CURRENT_BATTERY_LEVEL": 80
             }
           지원 형식 2 (섹션 중첩 구조):
             {
-              "NETWORK": { "RSSI_THRESHOLD": -75 },
-              "ENVIRONMENT": { "GAS_THRESHOLD_KOHM": 15 }
+              "ENVIRONMENT": { "TEMP_WARN_C": 28, "TEMP_DANGER_C": 45 }
             }
 
         반환값
@@ -556,28 +557,27 @@ def _normalize_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     플랫(flat) 형식과 섹션 중첩 형식 모두 지원합니다:
 
     플랫 형식 입력:
-      { "RSSI_THRESHOLD": -75, "GAS_THRESHOLD_KOHM": 15 }
+      { "TEMP_WARN_C": 28, "HUM_DANGER_PCT": 80 }
 
     정규화 출력:
       {
-        "NETWORK": { "RSSI_THRESHOLD": -75 },
-        "ENVIRONMENT": { "GAS_THRESHOLD_KOHM": 15 }
+        "ENVIRONMENT": { "TEMP_WARN_C": 28, "HUM_DANGER_PCT": 80 }
       }
 
     이미 섹션 중첩 형식이면 그대로 반환합니다.
     """
-    # 5개 파라미터와 해당 섹션의 매핑 테이블
+    # 파라미터와 해당 섹션의 매핑 테이블
     _FLAT_KEY_SECTION_MAP: Dict[str, str] = {
-        "RSSI_THRESHOLD":        "NETWORK",
-        "PACKET_LOSS_LIMIT":     "NETWORK",
-        "GAS_THRESHOLD_KOHM":    "ENVIRONMENT",
-        "TEMP_THRESHOLD_CELSIUS":"ENVIRONMENT",
+        "TEMP_WARN_C":           "ENVIRONMENT",
+        "TEMP_DANGER_C":         "ENVIRONMENT",
+        "HUM_WARN_PCT":          "ENVIRONMENT",
+        "HUM_DANGER_PCT":        "ENVIRONMENT",
         "POWER_MODE":            "POWER_MANAGEMENT",
         "CURRENT_BATTERY_LEVEL": "POWER_MANAGEMENT",
     }
 
     # 입력이 이미 섹션 중첩 구조인지 확인 (최상위 키가 섹션명인 경우)
-    _TOP_LEVEL_SECTIONS = {"NETWORK", "ENVIRONMENT", "POWER_MANAGEMENT"}
+    _TOP_LEVEL_SECTIONS = {"ENVIRONMENT", "POWER_MANAGEMENT"}
     if any(k in _TOP_LEVEL_SECTIONS for k in updates.keys()):
         # 이미 섹션 중첩 구조 — 그대로 반환
         return updates
@@ -604,10 +604,10 @@ def _validate_config(config: Dict[str, Any]) -> None:
     업데이트할 설정값의 유효성을 검증합니다.
 
     검증 규칙:
-      NETWORK.RSSI_THRESHOLD      : int 또는 float, -120 ≤ x ≤ 0 (dBm 범위)
-      NETWORK.PACKET_LOSS_LIMIT   : int 또는 float, 0 ≤ x ≤ 100 (%)
-      ENVIRONMENT.GAS_THRESHOLD_KOHM    : int 또는 float, 0 < x (kΩ, 양수여야 함)
-      ENVIRONMENT.TEMP_THRESHOLD_CELSIUS: int 또는 float, -40 ≤ x ≤ 125 (°C, 센서 범위)
+      ENVIRONMENT.TEMP_WARN_C     : int 또는 float, -40 ≤ x ≤ 125 (°C, 센서 범위)
+      ENVIRONMENT.TEMP_DANGER_C   : int 또는 float, -40 ≤ x ≤ 125 (°C, 센서 범위)
+      ENVIRONMENT.HUM_WARN_PCT    : int 또는 float, 0 ≤ x ≤ 100 (%)
+      ENVIRONMENT.HUM_DANGER_PCT  : int 또는 float, 0 ≤ x ≤ 100 (%)
       POWER_MANAGEMENT.POWER_MODE         : str, "EXTERNAL_5V" 또는 "BATTERY"
       POWER_MANAGEMENT.CURRENT_BATTERY_LEVEL: int, 0 ≤ x ≤ 100
 
@@ -617,39 +617,36 @@ def _validate_config(config: Dict[str, Any]) -> None:
     """
     errors: list = []
 
-    # ── NETWORK 섹션 검증 ────────────────────────────────────────────────────
-    net = config.get("NETWORK", {})
-
-    if "RSSI_THRESHOLD" in net:
-        v = net["RSSI_THRESHOLD"]
-        if not isinstance(v, (int, float)):
-            errors.append(f"RSSI_THRESHOLD는 숫자여야 합니다 (수신값: {v!r})")
-        elif not (-120 <= v <= 0):
-            errors.append(f"RSSI_THRESHOLD는 -120 ~ 0 dBm 범위여야 합니다 (수신값: {v})")
-
-    if "PACKET_LOSS_LIMIT" in net:
-        v = net["PACKET_LOSS_LIMIT"]
-        if not isinstance(v, (int, float)):
-            errors.append(f"PACKET_LOSS_LIMIT는 숫자여야 합니다 (수신값: {v!r})")
-        elif not (0 <= v <= 100):
-            errors.append(f"PACKET_LOSS_LIMIT는 0 ~ 100 % 범위여야 합니다 (수신값: {v})")
-
-    # ── ENVIRONMENT 섹션 검증 ────────────────────────────────────────────────
+    # ── ENVIRONMENT 섹션 검증 (온도/습도 임계값 — 펌웨어의 유일한 QoS 판단 기준) ──
     env = config.get("ENVIRONMENT", {})
 
-    if "GAS_THRESHOLD_KOHM" in env:
-        v = env["GAS_THRESHOLD_KOHM"]
+    if "TEMP_WARN_C" in env:
+        v = env["TEMP_WARN_C"]
         if not isinstance(v, (int, float)):
-            errors.append(f"GAS_THRESHOLD_KOHM는 숫자여야 합니다 (수신값: {v!r})")
-        elif v <= 0:
-            errors.append(f"GAS_THRESHOLD_KOHM는 0보다 큰 양수여야 합니다 (수신값: {v})")
-
-    if "TEMP_THRESHOLD_CELSIUS" in env:
-        v = env["TEMP_THRESHOLD_CELSIUS"]
-        if not isinstance(v, (int, float)):
-            errors.append(f"TEMP_THRESHOLD_CELSIUS는 숫자여야 합니다 (수신값: {v!r})")
+            errors.append(f"TEMP_WARN_C는 숫자여야 합니다 (수신값: {v!r})")
         elif not (-40 <= v <= 125):
-            errors.append(f"TEMP_THRESHOLD_CELSIUS는 -40 ~ 125 °C 범위여야 합니다 (수신값: {v})")
+            errors.append(f"TEMP_WARN_C는 -40 ~ 125 °C 범위여야 합니다 (수신값: {v})")
+
+    if "TEMP_DANGER_C" in env:
+        v = env["TEMP_DANGER_C"]
+        if not isinstance(v, (int, float)):
+            errors.append(f"TEMP_DANGER_C는 숫자여야 합니다 (수신값: {v!r})")
+        elif not (-40 <= v <= 125):
+            errors.append(f"TEMP_DANGER_C는 -40 ~ 125 °C 범위여야 합니다 (수신값: {v})")
+
+    if "HUM_WARN_PCT" in env:
+        v = env["HUM_WARN_PCT"]
+        if not isinstance(v, (int, float)):
+            errors.append(f"HUM_WARN_PCT는 숫자여야 합니다 (수신값: {v!r})")
+        elif not (0 <= v <= 100):
+            errors.append(f"HUM_WARN_PCT는 0 ~ 100 % 범위여야 합니다 (수신값: {v})")
+
+    if "HUM_DANGER_PCT" in env:
+        v = env["HUM_DANGER_PCT"]
+        if not isinstance(v, (int, float)):
+            errors.append(f"HUM_DANGER_PCT는 숫자여야 합니다 (수신값: {v!r})")
+        elif not (0 <= v <= 100):
+            errors.append(f"HUM_DANGER_PCT는 0 ~ 100 % 범위여야 합니다 (수신값: {v})")
 
     # ── POWER_MANAGEMENT 섹션 검증 ───────────────────────────────────────────
     pwr = config.get("POWER_MANAGEMENT", {})

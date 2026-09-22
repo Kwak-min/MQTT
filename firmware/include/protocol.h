@@ -38,7 +38,7 @@ struct PublishPacket {
   // [2026-06 확장] RTT/retry_count/sleep_mode_ratio JSON 필드 추가로 인해
   // 버퍼를 128 → 256 바이트로 확장합니다.
   // 긴 텔레메트리 JSON도 잘리지 않도록 충분한 공간을 확보합니다.
-  //   {"temp":32.50,"hum":45.20,"gas":18.50,"battery":100,"nn":0.512,
+  //   {"temp":32.50,"hum":45.20,"gas":18.50,"battery":100,"mode":"WARNING",
   //    "qos":1,"rtt":12.3,"retry":0,"sleep_r":0.833}
   char payload[256];
 

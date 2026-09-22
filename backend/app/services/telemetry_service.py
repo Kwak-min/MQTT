@@ -54,10 +54,15 @@ import time
 from typing import Dict, List, Optional
 
 from app.models.packet import PowerPacket, PublishPacket, EstimatedPowerPacket
-from app.services.power_estimator import estimate_energy
+from app.services.power_estimator import ACK_TIMEOUT_MS, VCC_V, estimate_cycle_energy
 from config import LOG_DIR, POWER_CSV, TELEMETRY_CSV
 
 logger = logging.getLogger(__name__)
+
+# 페이로드에 사이클별 활성/Sleep 시간("act", "slp")이 없을 때 가정하는 사이클 길이 (ms).
+# 현재 두 펌웨어는 모두 act/slp를 직접 보내므로 구버전 펌웨어 호환용 대체값입니다.
+# 두 펌웨어 모두 5초 주기입니다.
+_DEFAULT_CYCLE_MS: float = 5000.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -148,6 +153,22 @@ class TelemetryService:
         "total_bytes",        # 디바이스 누적 전송 바이트 수
     ]
 
+    # 확장 전력 로그(power_ext.csv): power.csv와 같은 앞 9개 컬럼 + 논문 분석용 원시 입력과 에너지 구성.
+    # power.csv는 대시보드 호환을 위해 스키마를 바꾸지 않고, 새 컬럼은 이 파일에만 기록합니다.
+    _POWER_EXT_FIELDS: List[str] = _POWER_FIELDS + [
+        "transport",          # 이번 트랜잭션의 전송 계층 ("tcp" | "udp" | "unknown")
+        "act_ms",             # 이번 사이클의 활성 시간 (ms) — 에너지 재계산의 입력
+        "slp_ms",             # 이번 사이클의 Sleep 시간 (ms) — 에너지 재계산의 입력
+        "active_energy_mwh",  # 트랜잭션(TX/RX) 구간 에너지
+        "idle_energy_mwh",    # 대기 구간 에너지 (재전송 타임아웃 대기 포함)
+        "sleep_energy_mwh",   # Sleep 구간 에너지
+        "average_current_ma", # 사이클 평균 전류 (mA)
+        "net_loss_pct",       # 혼잡도: 손실률 EWMA (%), Standard/구버전은 빈 값
+        "rtt_ratio",          # 혼잡도: 평소 대비 지연 배율
+        "congested",          # 혼잡 상태 (0/1)
+        "probe",              # 관측용 QoS 1 프로브 사이클 (0/1)
+    ]
+
     # ── BME680 가스 저항 물리적 유효 범위 (kΩ 단위) ─────────────────────────
     # 1 kΩ 미만 : 히터가 아직 예열 중이거나 단락(쇼트) 상태
     # 10 MΩ 초과 : 센서 측정 범위 초과 / 매우 청정한 공기
@@ -192,6 +213,7 @@ class TelemetryService:
         self,
         packet: PublishPacket,
         client_id: Optional[str] = None,
+        estimate_power: bool = True,
     ) -> None:
         """
         BME680 환경 PUBLISH 패킷을 처리하고 영속화합니다.
@@ -214,6 +236,10 @@ class TelemetryService:
         --------
         packet    : QoS 핸드셰이크가 완료된 PublishPacket.
         client_id : 세션 테이블에서 조회한 디바이스 ID (None이면 "unknown" 처리).
+        estimate_power : False이면 이 패킷으로 전력 추정을 하지 않습니다.
+                         Gingerbread의 topic 1 패킷은 핸드셰이크 이전에 만들어져
+                         RTT/retry가 확정되지 않은 값이므로, 전력 추정은 핸드셰이크
+                         이후 실측값을 담은 topic 2 패킷(record_power_metrics)에서 합니다.
         """
         payload = packet.payload or {}
 
@@ -279,7 +305,8 @@ class TelemetryService:
         # ── 4단계: [2026-06] SW 전력 추정 ───────────────────────────────────
         # PublishPacket 페이로드에서 라이브 메트릭을 추출하여
         # IEEE Access 2024 경험적 공식으로 전력을 실시간 추정합니다.
-        self._estimate_and_record_power(packet, client_id or "unknown")
+        if estimate_power:
+            self._estimate_and_record_power(packet, client_id or "unknown")
 
         # ── 구조화 로그 출력 ──────────────────────────────────────────────────
         # gas 값을 kΩ 단위로 변환하고 유효성 태그([OK]/[INVALID])를 부여합니다
@@ -315,46 +342,113 @@ class TelemetryService:
             " SW 추정 경로(_estimate_and_record_power)를 사용하세요."
         )
 
+    def record_power_metrics(
+        self,
+        packet: PublishPacket,
+        client_id: Optional[str] = None,
+    ) -> None:
+        """
+        Gingerbread 펌웨어가 핸드셰이크 완료 후 보내는 topic 2 텔레메트리 패킷으로
+        전력을 추정하고 기록합니다.
+
+        이 패킷에는 실측 RTT, 실제 재전송 횟수, 이번 사이클의 활성/Sleep 시간이
+        들어 있습니다. 센서 값은 topic 1 패킷에서 이미 기록되었으므로 환경 CSV에는
+        다시 쓰지 않습니다 (중복 행 방지).
+        """
+        self._estimate_and_record_power(packet, client_id or "unknown")
+
     def _estimate_and_record_power(
         self,
         packet: PublishPacket,
         client_id: str,
     ) -> None:
         """
-        PublishPacket 페이로드에서 RTT/retry/sleep 메트릭을 추출하고
-        IEEE Access 2024 공식으로 전력을 추정하여 power.csv에 기록합니다.
+        PublishPacket 페이로드에서 RTT/retry/사이클 시간 메트릭을 추출하고
+        IEEE Access 2024 공식으로 사이클 전체 에너지를 추정하여 power.csv에 기록합니다.
 
         실행 순서:
-          1. 페이로드에서 rtt_ms, retry_count, sleep_mode_ratio 안전 추출
-          2. estimate_energy() 호출 → estimated_energy_mwh 계산
+          1. 페이로드에서 qos, rtt, retry, 사이클별 활성/Sleep 시간 안전 추출
+          2. estimate_cycle_energy() 호출 → 트랜잭션 + 대기 + Sleep 에너지 계산
           3. self.power_data 스냅샷 갱신
-          4. power.csv에 행 추가
+          4. power.csv에 행 추가 (estimated_energy_mwh = 사이클 전체 에너지)
+
+        사이클 시간 결정:
+          - 페이로드에 "act"(활성 ms)와 "slp"(Sleep ms)가 있으면 그대로 사용합니다.
+            (Gingerbread: 사이클마다 실측)
+          - 없으면 _DEFAULT_CYCLE_MS를 "sleep_r" 비율로 나눕니다.
+            (표준 MQTT 노드: 무선을 계속 켜 두므로 sleep_r ≈ 0 → 사이클 전체가 활성)
+
+        QoS 결정:
+          페이로드의 "qos"(펌웨어가 실제로 선택한 QoS)를 우선합니다. 패킷 헤더의 QoS는
+          전송 방식일 뿐입니다 (텔레메트리 패킷은 항상 QoS 0으로 전송됨).
         """
         payload = packet.payload or {}
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        addr = packet.addr
 
         # ── 1단계: 소프트웨어 메트릭 안전 추출 ──────────────────────────────
-        # "rtt", "retry", "sleep_r" 키로 응답이 없으면 기본값
-        rtt_ms           = float(payload.get("rtt",     0.0))
-        retry_count      = int(  payload.get("retry",   0))
-        sleep_mode_ratio = float(payload.get("sleep_r", 0.0))
-        packet_count     = int(  payload.get("pkt",     0))
-        total_bytes      = int(  payload.get("bytes",   0))
+        # 값이 없거나 변환 불가하면 _coerce_float가 None을 돌려주고 기본값을 씁니다.
+        def _num(key: str, default: float) -> float:
+            value = _coerce_float(payload.get(key), key, addr)
+            return default if value is None else value
 
-        # ── 2단계: IEEE Access 2024 구식으로 에너지 추정 ──────────────────
-        # base_current = (TX_MA × tx_ratio[qos]) + (RX_MA × rx_ratio[qos])
-        # retry_penalty = 1 + (retry_count × 0.5)
-        # estimated_energy_mwh = (base_current × rtt_ms × retry_penalty) / 3600000 × VCC
-        estimated_energy_mwh = estimate_energy(
-            qos=packet.qos,
+        # RTT가 없거나 읽을 수 없는 패킷은 추정하지 않습니다.
+        # 0으로 대체하면 "대기만 한 사이클"로 계산되어 그럴듯한 가짜 행이 기록됩니다.
+        rtt_value = _coerce_float(payload.get("rtt"), "rtt", addr)
+        if rtt_value is None:
+            logger.warning(
+                "[전력추정] client='%s' 패킷에 유효한 'rtt'가 없어 전력 추정을 건너뜁니다 "
+                "(payload=%s)", client_id, packet.payload_raw,
+            )
+            return
+
+        qos              = int(_num("qos", float(packet.qos)))
+        rtt_ms           = rtt_value
+        retry_count      = int(_num("retry", 0.0))
+        sleep_mode_ratio = _num("sleep_r", 0.0)
+        packet_count     = int(_num("pkt",   0.0))
+        total_bytes      = int(_num("bytes", 0.0))
+
+        # 전송 계층: 펌웨어가 이번 트랜잭션에 실제로 사용한 프로토콜 ("tcp" | "udp").
+        # Gingerbread는 QoS에 따라 바뀌고, Standard는 항상 tcp입니다. 구버전 펌웨어는 필드가 없어 "unknown".
+        transport = payload.get("tp")
+        if transport not in ("tcp", "udp"):
+            transport = "unknown"
+
+        # 네트워크 혼잡도 (Gingerbread 펌웨어의 net_congestion.h가 계산): 손실률 EWMA(%), 평소 대비 지연 배율,
+        # 혼잡 상태 여부, 관측용 QoS 1 프로브 사이클 여부. 구버전 펌웨어/Standard 노드는 필드가 없어 None입니다.
+        net_loss_pct = _coerce_float(payload.get("ls"), "ls", addr)
+        rtt_ratio = _coerce_float(payload.get("rr"), "rr", addr)
+        congested = None if payload.get("cg") is None else bool(payload.get("cg"))
+        probe = None if payload.get("pb") is None else bool(payload.get("pb"))
+
+        act_ms = _coerce_float(payload.get("act"), "act", addr)
+        slp_ms = _coerce_float(payload.get("slp"), "slp", addr)
+        if act_ms is not None and slp_ms is not None:
+            active_ms, sleep_ms = act_ms, slp_ms
+        else:
+            ratio     = max(0.0, min(1.0, sleep_mode_ratio))
+            sleep_ms  = _DEFAULT_CYCLE_MS * ratio
+            active_ms = _DEFAULT_CYCLE_MS - sleep_ms
+
+        # ── 2단계: 사이클 전체 에너지 추정 ──────────────────────────────────
+        # 트랜잭션(RTT 중 실제 송수신) + 대기(타임아웃 대기 포함, IDLE_MA) + Sleep(SLEEP_MA)
+        # 재전송 1회마다 ACK_TIMEOUT_MS만큼 응답을 기다렸으므로, RTT 중 그만큼은 송수신이 아니라
+        # 대기 시간입니다 (재전송 이중 계산 방지 — power_estimator.estimate_cycle_energy 참조).
+        cycle = estimate_cycle_energy(
+            qos=qos,
             rtt_ms=rtt_ms,
             retry_count=retry_count,
+            active_ms=active_ms,
+            sleep_ms=sleep_ms,
+            timeout_wait_ms=retry_count * ACK_TIMEOUT_MS,
         )
+        estimated_energy_mwh = cycle["total_energy_mwh"]
 
         row = {
             "timestamp":            timestamp,
             "client_id":            client_id,
-            "qos":                  packet.qos,
+            "qos":                  qos,
             "rtt_ms":               rtt_ms,
             "retry_count":          retry_count,
             "sleep_mode_ratio":     sleep_mode_ratio,
@@ -378,21 +472,48 @@ class TelemetryService:
             # SW 추정 필드로 매핑하여 기존 REST API 호환성 유지
             snap["current_mA"]           = 0.0  # SW 추정에서는 실측 불가
             snap["voltage_V"]            = 0.0
-            snap["power_mW"]             = estimated_energy_mwh * 3_600_000 / max(1.0, rtt_ms)
+            # 사이클 평균 전력 (mW) = 평균 전류 (mA) × 공급 전압 (V)
+            snap["power_mW"]             = cycle["average_current_ma"] * VCC_V
             snap["sample_count"]        += 1
             # 신규 필드 추가 (기존 타입에 없으면 자동 생성)
             snap["estimated_energy_mwh"] = estimated_energy_mwh
+            snap["active_energy_mwh"]    = cycle["active_energy_mwh"]
+            snap["idle_energy_mwh"]      = cycle["idle_energy_mwh"]
+            snap["sleep_energy_mwh"]     = cycle["sleep_energy_mwh"]
+            snap["average_current_ma"]   = cycle["average_current_ma"]
+            snap["efficiency_gain_pct"]  = cycle["efficiency_gain_pct"]
+            snap["transport"]            = transport
+            snap["net_loss_pct"]         = net_loss_pct
+            snap["rtt_ratio"]            = rtt_ratio
+            snap["congested"]            = congested
+            snap["probe"]                = probe
             snap["rtt_ms"]               = rtt_ms
             snap["retry_count"]          = retry_count
             snap["sleep_mode_ratio"]     = sleep_mode_ratio
 
             self._write_power_row(row)
+            self._write_power_ext_row({
+                **row,
+                "transport":          transport,
+                "act_ms":             round(active_ms, 3),
+                "slp_ms":             round(sleep_ms, 3),
+                "active_energy_mwh":  cycle["active_energy_mwh"],
+                "idle_energy_mwh":    cycle["idle_energy_mwh"],
+                "sleep_energy_mwh":   cycle["sleep_energy_mwh"],
+                "average_current_ma": cycle["average_current_ma"],
+                "net_loss_pct":       net_loss_pct,
+                "rtt_ratio":          rtt_ratio,
+                "congested":          None if congested is None else int(congested),
+                "probe":              None if probe is None else int(probe),
+            })
 
         logger.info(
             "[\uc804\ub825\ucd94\uc815] client='%s' QoS=%d | RTT=%.2f ms | retry=%d | "
-            "sleep=%.1f%% | energy=%.8f mWh",
-            client_id, packet.qos, rtt_ms, retry_count,
-            sleep_mode_ratio * 100.0, estimated_energy_mwh,
+            "active=%.0f ms | sleep=%.0f ms | transport=%s | energy=%.8f mWh "
+            "(tx/rx %.8f + idle %.8f + sleep %.8f)",
+            client_id, qos, rtt_ms, retry_count,
+            active_ms, sleep_ms, transport, estimated_energy_mwh,
+            cycle["active_energy_mwh"], cycle["idle_energy_mwh"], cycle["sleep_energy_mwh"],
         )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -625,6 +746,26 @@ class TelemetryService:
         except OSError as exc:
             logger.error("[텔레메트리] 전력 CSV 쓰기 실패: %s", exc)
 
+    def _power_ext_path(self) -> str:
+        """확장 전력 로그 경로. POWER_CSV와 같은 폴더의 power_ext.csv (POWER_CSV를 바꾸면 함께 바뀜)."""
+        return os.path.join(os.path.dirname(POWER_CSV), "power_ext.csv")
+
+    def _write_power_ext_row(self, row: dict) -> None:
+        """
+        확장 전력 로그(power_ext.csv)에 행 1개를 추가합니다. (호출자가 락을 보유 중)
+
+        기존 power.csv는 대시보드와 호환되도록 스키마를 그대로 두고, 논문 분석에 필요한 원시 입력
+        (사이클의 활성/Sleep 시간, 전송 계층, 혼잡 지표)과 에너지 구성을 여기에 따로 남깁니다.
+        원시 입력(qos, rtt_ms, retry_count, act_ms, slp_ms)이 있으므로 나중에 모델 상수를 바꿔
+        실측 로그로 에너지를 다시 계산할 수 있습니다 (backend/tools/analyze_power.py --sensitivity).
+        """
+        try:
+            with open(self._power_ext_path(), "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=self._POWER_EXT_FIELDS, extrasaction="ignore")
+                writer.writerow(row)
+        except OSError as exc:
+            logger.error("[텔레메트리] 확장 전력 CSV 쓰기 실패: %s", exc)
+
     # ──────────────────────────────────────────────────────────────────────────
     # CSV 헤더 초기화
     # ──────────────────────────────────────────────────────────────────────────
@@ -634,6 +775,7 @@ class TelemetryService:
         for path, fields in [
             (TELEMETRY_CSV, self._ENV_FIELDS),
             (POWER_CSV,     self._POWER_FIELDS),
+            (self._power_ext_path(), self._POWER_EXT_FIELDS),
         ]:
             if not os.path.exists(path):
                 try:

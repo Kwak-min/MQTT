@@ -16,11 +16,27 @@ import os
 UDP_HOST = "0.0.0.0"               # 사용 가능한 모든 인터페이스에서 수신 대기
 
 # Standard MQTT Board 2 브로커
-MQTT_BROKER_HOST = "10.61.35.14"
+MQTT_BROKER_HOST = "10.144.246.14"
 MQTT_BROKER_PORT = 1883
 
 # Node B  ──  Gingerbread (저전력 맞춤형 UDP 프로토콜)
 GINGERBREAD_PORT = 5000
+
+# Node B  ──  Gingerbread 상위 QoS 신뢰성 모드 (TCP)
+# 프로젝트 명세: QoS 0·1은 UDP, 상위 QoS(TCP_MIN_QOS 이상)는 TCP로 자동 전환합니다.
+# 펌웨어의 TCP_SERVER_PORT와 일치해야 합니다.
+GINGERBREAD_TCP_PORT = 5001
+
+# TCP 프레임 최대 길이(바이트). PublishPacket은 최대 264바이트입니다.
+TCP_MAX_FRAME = 512
+
+# TCP 연결에서 다음 데이터를 기다리는 최대 시간(초). 응답 없이 열려 있는 연결을 정리합니다.
+TCP_CONN_TIMEOUT_SECONDS = 5
+
+# 같은 (IP, msg_id)를 중복으로 간주하는 시간(초).
+# 디바이스의 최대 재전송 시간(4회 × 약 2초)보다 길고, 재부팅 후 msg_id 재사용과는
+# 충돌하기 어렵도록 짧게 잡습니다. 응답(PUBCOMP) 유실로 재전송된 메시지의 이중 처리를 막습니다.
+TCP_DEDUP_TTL_SECONDS = 15
 
 # ESP32-C3 전력 MCU  ──  JSON 전력 스트리밍 (전류, 전압, 전력)
 POWER_PORT = 6000

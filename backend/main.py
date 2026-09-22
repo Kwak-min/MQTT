@@ -50,6 +50,7 @@ logger = logging.getLogger("main")
 from config import (
     UDP_HOST,
     GINGERBREAD_PORT,
+    GINGERBREAD_TCP_PORT,
     POWER_PORT,
     MQTT_BROKER_HOST,
     MQTT_BROKER_PORT,
@@ -62,7 +63,8 @@ from app.services.config_service    import ConfigService
 # ControlService: 대시보드 → ESP32-S3 다운링크 제어 패킷 전송
 from app.services.control_service   import ControlService
 from app.socket.udp_listener        import GingerbreadListener, PowerListener
-from app.models.packet              import ConnectPacket, DisconnectPacket, PublishPacket, PowerPacket
+from app.socket.tcp_listener        import GingerbreadTcpListener, session_addr_for_ip
+from app.models.packet             import ConnectPacket, DisconnectPacket, PublishPacket, PowerPacket
 from app.services.standard_mqtt_listener import StandardMqttListener
 
 
@@ -93,31 +95,75 @@ def main() -> None:
     def on_disconnect(packet: DisconnectPacket) -> None:
         session_svc.on_disconnect(packet)
 
+    def resolve_client_id(packet: PublishPacket):
+        """발신자 주소로 세션 테이블에서 client_id를 조회합니다 (없으면 None)."""
+        for sess in session_svc.get_all():
+            if sess["addr_ip"] == packet.addr[0] and sess["addr_port"] == packet.addr[1]:
+                return sess["client_id"]
+        return None
+
     def on_env_deliver(packet: PublishPacket) -> None:
         """
         PUBLISH가 확인되면(모든 QoS 수준) QoSHandler에 의해 호출됩니다.
         로깅하기 전에 세션 테이블에서 client_id를 확인합니다.
-        """
-        # 발신자 주소로 세션 테이블에서 client_id 확인
-        client_id = None
-        for sess in session_svc.get_all():
-            if sess["addr_ip"] == packet.addr[0] and sess["addr_port"] == packet.addr[1]:
-                client_id = sess["client_id"]
-                break
 
+        전력 추정은 여기서 하지 않습니다. 이 패킷(topic 1)은 핸드셰이크 이전에 만들어져
+        RTT/retry가 아직 없으므로, 실측값이 담긴 topic 2 패킷(on_gingerbread_telemetry)에서
+        추정합니다.
+        """
         session_svc.increment_packet_count(packet.addr)
-        telemetry_svc.record_env_telemetry(packet, client_id=client_id)
+        telemetry_svc.record_env_telemetry(
+            packet, client_id=resolve_client_id(packet), estimate_power=False,
+        )
+
+    def on_gingerbread_telemetry(packet: PublishPacket) -> None:
+        """
+        Gingerbread가 핸드셰이크 완료 후 보내는 topic 2 패킷(실측 RTT/retry/사이클 시간)으로
+        전력을 추정합니다.
+        """
+        telemetry_svc.record_power_metrics(packet, client_id=resolve_client_id(packet))
+
+    def rebind_to_session_addr(packet: PublishPacket) -> None:
+        """
+        TCP로 들어온 패킷의 발신 주소를 세션 테이블의 주소로 바꿉니다.
+        세션은 UDP CONNECT의 (ip, port)가 키인데 TCP 연결은 매번 임시 포트를 쓰므로,
+        그대로 두면 client_id 조회와 패킷 카운터가 매칭되지 않습니다.
+        """
+        addr = session_addr_for_ip(session_svc.get_all(), packet.addr[0])
+        if addr is not None:
+            packet.addr = addr
+
+    def on_gingerbread_tcp_deliver(packet: PublishPacket) -> None:
+        """상위 QoS(TCP)로 전달된 센서 데이터 — UDP 경로와 동일하게 처리합니다."""
+        rebind_to_session_addr(packet)
+        on_env_deliver(packet)
+
+    def on_gingerbread_tcp_telemetry(packet: PublishPacket) -> None:
+        """TCP로 전달된 실측 메트릭(topic 2) — UDP 경로와 동일하게 전력을 추정합니다."""
+        rebind_to_session_addr(packet)
+        on_gingerbread_telemetry(packet)
 
     def on_power(packet: PowerPacket) -> None:
         """모든 전력 MCU 스트리밍 패킷에 대해 호출됩니다."""
         telemetry_svc.record_power_telemetry(packet)
 
+    STANDARD_CLIENT_ID = "ESP32-Standard-MQTT"
+
     def on_standard_telemetry(packet: PublishPacket) -> None:
-        """Board 2 MQTT 텔레메트리를 기존 환경 CSV 경로로 전달합니다."""
+        """
+        Board 2 MQTT 센서 데이터를 기존 환경 CSV 경로로 전달합니다.
+        전력 추정은 하지 않습니다: 이 메시지는 발행 이전에 만들어져 RTT/retry가 없으므로,
+        실측값이 담긴 메트릭 메시지(on_standard_metrics)에서 추정합니다.
+        """
         telemetry_svc.record_env_telemetry(
             packet,
-            client_id="ESP32-Standard-MQTT",
+            client_id=STANDARD_CLIENT_ID,
+            estimate_power=False,
         )
+
+    def on_standard_metrics(packet: PublishPacket) -> None:
+        """Board 2가 QoS 1 발행 후 보내는 실측 RTT/retry 메트릭으로 전력을 추정합니다."""
+        telemetry_svc.record_power_metrics(packet, client_id=STANDARD_CLIENT_ID)
 
     # ──────────────────────────────────────────────────────────────────────────
     # 3. UDP 리스너
@@ -128,6 +174,15 @@ def main() -> None:
         on_connect=on_connect,
         on_disconnect=on_disconnect,
         on_deliver=on_env_deliver,
+        on_telemetry=on_gingerbread_telemetry,
+    )
+
+    # 상위 QoS 신뢰성 모드: QoS 2는 UDP가 아니라 TCP로 들어옵니다 (프로젝트 명세).
+    gingerbread_tcp_listener = GingerbreadTcpListener(
+        host=UDP_HOST,
+        port=GINGERBREAD_TCP_PORT,
+        on_deliver=on_gingerbread_tcp_deliver,
+        on_telemetry=on_gingerbread_tcp_telemetry,
     )
 
     power_listener = PowerListener(
@@ -140,14 +195,17 @@ def main() -> None:
         host=MQTT_BROKER_HOST,
         port=MQTT_BROKER_PORT,
         on_telemetry=on_standard_telemetry,
+        on_metrics=on_standard_metrics,
     )
 
     gingerbread_listener.start()
+    gingerbread_tcp_listener.start()
     power_listener.start()
     standard_mqtt_listener.start()
 
     logger.info("[Main] Listeners started.")
-    logger.info("[Main]   -> Gingerbread  (Node B)    : UDP %s:%d", UDP_HOST, GINGERBREAD_PORT)
+    logger.info("[Main]   -> Gingerbread  (Node B)    : UDP %s:%d  (QoS 0/1)", UDP_HOST, GINGERBREAD_PORT)
+    logger.info("[Main]   -> Gingerbread  (Node B)    : TCP %s:%d  (상위 QoS)", UDP_HOST, GINGERBREAD_TCP_PORT)
     logger.info("[Main]   -> Power MCU    (ESP32-C3)  : UDP %s:%d", UDP_HOST, POWER_PORT)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -173,6 +231,7 @@ def main() -> None:
         logger.info("\n[Main] Shutdown signal received.")
     finally:
         gingerbread_listener.stop()
+        gingerbread_tcp_listener.stop()
         power_listener.stop()
         standard_mqtt_listener.stop()
         # ConfigService 종료 — MQTT 클라이언트 연결을 안전하게 닫습니다
