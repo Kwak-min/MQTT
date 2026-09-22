@@ -1,56 +1,45 @@
-# 🚀 설정 및 실행 가이드
+# Instructions for AI Coding Agent: Project Gingerbread
 
-Gingerbread 프로젝트 노드와 라즈베리파이(Raspberry Pi) 게이트웨이를 배포하고 평가하기 위해 아래의 지침을 따르십시오.
+## 1. Project Overview
+This project (`MQTT-feat-sw-power-estimation`) aims to optimize battery power consumption in IoT edge devices by dynamically switching network protocols (UDP vs. TCP), transmission intervals, and Deep Sleep modes based on combined Temperature and Humidity thresholds (Gingerbread Protocol).
 
-## 1. 하드웨어 전원 및 설정
-물리적인 INA226 하드웨어 전력 모니터링 방식은 소프트웨어 정의 전력 추정 방식으로 대체되어 폐지되었습니다.
-1. 보드에 외부 I2C 전력 센서나 션트(Shunt) 저항을 연결하지 **마십시오**.
-2. ESP32-S3 노드(Node 1 및 Node 2)에 전원을 공급할 때는 개별적인 **5V 외부 USB 어댑터** 또는 안정적인 보조 배터리를 사용하십시오. 최종 성능 평가 시 컴퓨터의 USB 허브 전류 제한이 무선 성능에 영향을 미치는 것을 방지하기 위해 PC에 직접 연결하여 전원을 공급하는 것은 피하십시오.
+---
 
-## 2. 펌웨어 빌드 및 업로드
-1. 타겟으로 삼을 ESP32-S3 보드를 USB-C 케이블을 통해 컴퓨터에 연결합니다. (포트 혼선 방지를 위해 한 번에 하나의 보드만 연결하십시오).
-2. 연결 중인 로컬 네트워크 환경에 맞게, 다음 소스 파일들의 최상단에 위치한 Wi-Fi 자격 증명(SSID 및 비밀번호)을 수정합니다:
-   - Node 1 (Gingerbread): `firmware/src/main_gingerbread.cpp`
-   - Node 2 (베이스라인): `firmware/src/main_standard_MQTT.cpp`
-3. 또한, `MQTT_BROKER_IP` / `UDP_SERVER_IP` 값이 라즈베리파이 게이트웨이의 로컬 IP 주소로 설정되어 있는지 확인하고 저장(`Ctrl + S`)합니다.
-4. Antigravity IDE (또는 PlatformIO가 설치된 VSCode)의 하단 상태 표시줄에서 해당하는 환경(Environment) 타겟을 선택합니다:
-   - Node 1용: `board1_gingerbread`
-   - Node 2용: `board2_standard`
-5. **업로드(Upload)** 버튼(`➔`)을 클릭하여 펌웨어를 컴파일하고 ESP32-S3 보드에 플래싱합니다.
-6. 업로드가 완료되면 선택적으로 **시리얼 모니터(Serial Monitor)**를 열어 보드가 Wi-Fi에 정상적으로 연결되고 데이터 전송을 시작하는지 확인할 수 있습니다.
+## 2. Core Specification: Gingerbread Protocol
 
-## 3. 라즈베리파이 게이트웨이 실행
-백엔드 게이트웨이는 패킷 수신을 처리하고 IEEE Access 2024 기반 경험적 전력 추정(Empirical Power Estimation)을 동적으로 계산합니다.
+Determine the QoS state based on the higher severity level between Temperature and Humidity (OR logic).
 
-1. 라즈베리파이에 SSH로 접속하거나 게이트웨이 머신에서 터미널을 엽니다.
-2. 백엔드(backend) 디렉토리로 이동합니다:
-   ```bash
-   cd backend
-   ```
-3. 아직 설치하지 않았다면 필요한 종속성을 설치합니다:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. 게이트웨이 서버를 시작합니다:
-   ```bash
-   python main.py
-   ```
-   
-게이트웨이는 자동으로 다음을 수행합니다:
-* 지정된 포트에서 들어오는 UDP 패킷을 수신 대기합니다.
-* 성능 메트릭(RTT, 재전송 횟수, 수면 모드 비율)을 추출합니다.
-* 경험적 전력 공식을 동적으로 계산합니다.
-* 정리되고 병합된 데이터를 `backend/logs/telemetry.csv` 및 `backend/logs/power.csv`에 텔레메트리 로그로 저장합니다.
+| QoS Level | Mode | Condition (Temp / Humidity) | Protocol | Interval | Sleep Mode | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **QoS 0** | Normal | Temp ≤ 30°C **AND** Humidity ≤ 70% | **UDP** | 60 sec | Deep Sleep immediately after Tx | Fire-and-forget, minimal overhead |
+| **QoS 1** | Warning | (30°C < Temp ≤ 50°C) **OR** (70% < Humidity ≤ 85%) | **UDP** | 30 sec | Short repeated Deep Sleep | Maintains UDP, increases sample rate |
+| **QoS 2** | Emergency | Temp > 50°C **OR** Humidity > 85% | **TCP** | 3 sec | Deep Sleep (short) | Establishes TCP connection, 100% ACK guaranteed |
 
-## 4. 트러블슈팅 (자주 발생하는 오류 해결)
-### 🚨 에러: Failed to connect to ESP32-S3: No serial data received.
-- **원인**: 보드가 연산으로 바쁘거나 수면 상태(Sleep State)에 진입하여 업로드 동기화 신호를 무시하는 현상입니다.
-- **해결책**: 보드를 수동으로 부트로더(Bootloader) 모드로 강제 진입시킵니다:
-  1. ESP32-S3 보드의 `BOOT` 버튼을 누른 상태를 유지합니다.
-  2. `BOOT`를 누른 상태에서 `RST` (또는 `EN`) 버튼을 한 번 눌렀다 뗍니다.
-  3. 누르고 있던 `BOOT` 버튼에서 손을 뗍니다.
-  4. IDE에서 업로드 버튼을 다시 클릭합니다.
+> All three levels use real `esp_deep_sleep_start()` — only the sleep duration changes (60s → 30s → 3s as severity rises), so detection can never be "instant," but once an anomaly is first caught the check interval tightens fast. Going much shorter than 3s at QoS 2 trades away Deep Sleep's power benefit, since each wake pays a fixed Wi-Fi/MQTT reconnect cost (~0.5-1s) that becomes a larger fraction of a very short cycle — acceptable here because QoS 2 prioritizes reliability over power savings.
+>
+> **Who decides the level above (Temp/Humidity → QoS) is TinyML, not this table directly.** A 2-input (temp, humidity) MLP (`firmware/include/mlp_inference.h` + `mlp_weights.h`) computes a risk score and maps it to QoS 0/1/2 once trained (`MLP_WEIGHTS_TRAINED=1` in `mlp_weights.h`, produced by `ml_model/train.py --features temp,hum`). Until real data is collected and the network is trained, the firmware falls back to exactly the rule in the table above (plus a narrow, hard-clamped TinyML calibration on the thresholds, `qos_calibration.h`) so behavior stays safe and well-defined either way. Boot and per-cycle logs are tagged `(NN)` or `(rule)` to show which path is active.
 
-### 🚨 에러: 시리얼 포트 사용 중 또는 인식 불가 (Serial Port Busy or Unrecognized)
-- **원인**: 이전 세션에서 OS가 COM 포트를 해제하지 못했거나, 케이블 연결 불량으로 인해 인식이 끊긴 상태입니다.
-- **해결책**: USB 케이블을 완전히 뽑은 후 3초 정도 대기한 다음 다시 단단히 연결합니다. 그 후 시리얼 모니터를 다시 시작하십시오.
+---
+
+## 3. System Architecture & Module Responsibilities
+
+### A. Firmware (`firmware/src/main_gingerbread.cpp`)
+- Evaluate sensor metrics (Temp/Humidity) and switch state between QoS 0, 1, and 2.
+- **QoS 0 & 1**: Send payload via UDP to `udp_listener`, then Deep Sleep (`esp_deep_sleep_start()`) for the level's interval (60s / 30s).
+- **QoS 2**: Establish a TCP socket, transmit the emergency payload to the Gingerbread TCP listener (port 5001), then Deep Sleep for the short 3s interval so the next check happens almost immediately.
+
+### B. Backend (`backend/app/`)
+- **`socket/udp_listener.py` & `services/standard_mqtt_listener.py`**: Asynchronously listen to UDP and TCP incoming streams.
+- **`socket/qos_handler.py`**: Validate received QoS state and log telemetry to `logs/telemetry.csv` & `logs/sessions.csv`.
+- **`services/power_estimator.py`**: Compute theoretical power consumption ($P_{\text{est}}$) based on transmission counts ($N_{\text{Tx}}$) and sleep duration ($T_{\text{sleep}}$) using datasheet specifications, then log to `logs/power.csv`.
+  - Formula: $P_{\text{est}} = (N_{\text{Tx}} \times E_{\text{Tx}}) + (T_{\text{sleep}} \times P_{\text{sleep}})$
+
+### C. Dashboard (`dashboard.py`)
+- Real-time visualization using Streamlit for Temp/Humidity, Active Protocol (UDP/TCP), QoS level, and estimated power usage.
+
+---
+
+## 4. Implementation Guidelines for AI
+1. **Maintain Separation**: Do not mix `main_standard_MQTT.cpp` (Standard TCP mode) with `main_gingerbread.cpp` (Adaptive mode).
+2. **Comment Code**: Add clear Korean inline comments at protocol switching boundaries (e.g., `// [QoS 0 -> QoS 1 스위칭]`).
+3. **Refactor Focus**: Prioritize getting `main_gingerbread.cpp`, `qos_handler.py`, and `power_estimator.py` aligned with the specification above.

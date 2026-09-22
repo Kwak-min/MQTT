@@ -15,10 +15,10 @@ backend/app/controllers/config_controller.py
       웹 대시보드에서 변경된 파라미터를 수신하고,
       config.json에 저장 후 MQTT로 ESP32에 즉시 푸시합니다.
       지원 파라미터 (플랫 또는 섹션 중첩 JSON 형식 모두 허용):
-        - RSSI_THRESHOLD (int/float, -120~0 dBm)
-        - PACKET_LOSS_LIMIT (int/float, 0~100 %)
-        - GAS_THRESHOLD_KOHM (int/float, 양수)
-        - TEMP_THRESHOLD_CELSIUS (int/float, -40~125 °C)
+        - TEMP_WARN_C (int/float, -40~125 °C) — 이 값 이하면 QoS 0
+        - TEMP_DANGER_C (int/float, -40~125 °C) — 초과하면 QoS 2
+        - HUM_WARN_PCT (int/float, 0~100 %) — 이 값 이하면 QoS 0
+        - HUM_DANGER_PCT (int/float, 0~100 %) — 초과하면 QoS 2
         - POWER_MODE (str, "EXTERNAL_5V" | "BATTERY")
         - CURRENT_BATTERY_LEVEL (int, 0~100)
 
@@ -72,8 +72,8 @@ def create_blueprint(config_svc: "ConfigService") -> Blueprint:
           {
             "status": "ok",
             "config": {
-              "NETWORK": { "RSSI_THRESHOLD": -80, "PACKET_LOSS_LIMIT": 5 },
-              "ENVIRONMENT": { "GAS_THRESHOLD_KOHM": 20, "TEMP_THRESHOLD_CELSIUS": 45 },
+              "ENVIRONMENT": { "TEMP_WARN_C": 30, "TEMP_DANGER_C": 50,
+                               "HUM_WARN_PCT": 70, "HUM_DANGER_PCT": 85 },
               "POWER_MANAGEMENT": { "POWER_MODE": "EXTERNAL_5V", "CURRENT_BATTERY_LEVEL": 100 }
             },
             "timestamp": "2026-06-02T21:00:00"
@@ -108,14 +108,14 @@ def create_blueprint(config_svc: "ConfigService") -> Blueprint:
         요청 본문 (Content-Type: application/json):
           플랫(flat) 형식:
             {
-              "RSSI_THRESHOLD": -75,
+              "TEMP_DANGER_C": 45,
               "POWER_MODE": "BATTERY",
               "CURRENT_BATTERY_LEVEL": 85
             }
 
           또는 섹션 중첩 형식:
             {
-              "NETWORK": { "RSSI_THRESHOLD": -75 },
+              "ENVIRONMENT": { "TEMP_DANGER_C": 45 },
               "POWER_MANAGEMENT": { "POWER_MODE": "BATTERY" }
             }
 

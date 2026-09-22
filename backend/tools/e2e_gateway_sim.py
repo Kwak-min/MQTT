@@ -410,24 +410,24 @@ def main() -> int:
 
         # ── 설정 동기화: POST /api/config → MQTT 발행(보존) ─────────────────────
         try:
-            # 게이트웨이는 시작할 때도 현재 설정을 한 번 발행하므로, POST가 바꾼 값(손실 상한 3)이 담긴 발행을 기다립니다.
+            # 게이트웨이는 시작할 때도 현재 설정을 한 번 발행하므로, POST가 바꾼 값(온도 위험 임계값 40)이 담긴 발행을 기다립니다.
             n_cfg_before = len([p for p in broker.published if p[0] == "gingerbread/config"])
-            resp = http_post("/api/config", {"NETWORK": {"RSSI_THRESHOLD": -75, "PACKET_LOSS_LIMIT": 3}})
+            resp = http_post("/api/config", {"ENVIRONMENT": {"TEMP_DANGER_C": 40}})
 
             def changed_publish():
                 for topic, payload, qos, retain in reversed(broker.published):
                     if topic == "gingerbread/config":
                         d = json.loads(payload.decode())
-                        if d.get("NETWORK", {}).get("PACKET_LOSS_LIMIT") == 3:
+                        if d.get("ENVIRONMENT", {}).get("TEMP_DANGER_C") == 40:
                             return d, retain
                 return None
 
             got = wait_for(changed_publish, timeout=5)
-            cfg_msgs = [json.loads(p[1].decode()).get("NETWORK") for p in broker.published if p[0] == "gingerbread/config"]
+            cfg_msgs = [json.loads(p[1].decode()).get("ENVIRONMENT") for p in broker.published if p[0] == "gingerbread/config"]
             check("13) POST /api/config → 변경된 설정이 gingerbread/config 로 보존(retain) 발행",
                   got is not None and got[1], f"| POST 응답 {str(resp)[:90]} | 발행 {len(cfg_msgs)}건(POST 전 {n_cfg_before}건), 마지막 {cfg_msgs[-1] if cfg_msgs else None}")
             saved = http_get("/api/config")
-            check("    GET /api/config 가 변경된 값을 돌려줌", "3" in json.dumps(saved), f"| {json.dumps(saved)[:120]}")
+            check("    GET /api/config 가 변경된 값을 돌려줌", "40" in json.dumps(saved), f"| {json.dumps(saved)[:120]}")
         except (urllib.error.URLError, ValueError) as exc:
             check("13) POST /api/config", False, f"| {exc}")
 

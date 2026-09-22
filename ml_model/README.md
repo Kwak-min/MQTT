@@ -1,11 +1,58 @@
-# 위험 점수 MLP — 데이터 수집과 학습 절차
+# TinyML 학습 절차
 
-Gingerbread 노드는 BME680 센서값으로 "위험 점수(0~1)"를 계산하고, 점수에 따라 QoS를 고릅니다
-(QoS 0·1은 UDP, QoS 2는 TCP). 이 문서는 직접 수집한 데이터로 그 점수 모델(5-5-1 MLP)을 학습하는 절차입니다.
+## [목표 상태] TinyML이 QoS를 직접 결정 — 위험 점수 MLP (`train.py`)
 
-> **현재 상태:** `firmware/include/mlp_weights.h`의 값은 **학습되지 않은 임시값**입니다
-> (`MLP_WEIGHTS_TRAINED 0`, 다른 AI가 만든 숫자). 아래 절차를 마치면 학습된 값으로 교체되고,
-> 부팅 시 시리얼에 "학습된 값"이라고 표시됩니다.
+**QoS를 직접 고르는 주체는 TinyML(5-5-1 MLP)입니다.** 온도·습도 두 값(가스/기압 입력 열은
+가중치 0으로 고정)을 받아 위험 점수(0~1)를 계산하고, 그 점수를 QoS 0/1/2로 매핑합니다 —
+사람이 짠 if/else 규칙이 아니라 신경망이 직접 결정합니다.
+
+```
+python ml_model/train.py --val-sessions <새 세션 ID>
+```
+
+- 결과: `firmware/include/mlp_weights.h`(펌웨어용, `MLP_WEIGHTS_TRAINED=1`),
+  `ml_model/data/train_report.json`(macro-F1, 단일 특징 규칙 기준선과의 비교).
+- **현재 상태:** `raw_dataset.csv`가 비어 있어 아직 학습된 적이 없습니다 (`MLP_WEIGHTS_TRAINED 0`).
+  이 상태에서 펌웨어(`main_gingerbread.cpp`)는 MLP를 쓰지 않고, 아래 "QoS 임계값 보정"까지 적용한
+  사람이 정한 규칙(SPEC)으로 **안전하게 폴백**합니다. 부팅 시리얼과 QoS 판정 로그에 `(NN)`/`(rule)`로
+  어느 쪽이 활성인지 항상 표시됩니다.
+- 데이터를 모으고 위 명령을 실행하면(`--features temp,hum` 기본값) MLP가 학습되어
+  `MLP_WEIGHTS_TRAINED=1`로 바뀌고, 그 순간부터 신경망이 QoS를 직접 결정하기 시작합니다.
+- `ml_model/verify_export.py`로 C++ 순전파와 파이썬 학습 결과가 일치하는지 업로드 전에 검증하세요.
+
+---
+
+## [MLP 학습 전까지의 안전한 폴백] QoS 임계값 보정 (`train_threshold_calibration.py`)
+
+MLP가 아직 학습되지 않았을 때, 펌웨어는 **온도·습도 임계값(SPEC: 30/50/70/85,
+`firmware/src/main_gingerbread.cpp` `SystemConfig` 기본값)** 규칙으로 QoS를 판단합니다. 이 스크립트는
+그 SPEC 임계값에서 아주 조금(펌웨어의 `TEMP_ADJUST_LIMIT_C`/`HUM_ADJUST_LIMIT_PCT`, 기본 ±3°C/±5%
+이내) TinyML이 보정폭(delta)을 학습하게 해서, MLP가 준비되기 전에도 데이터로 규칙을 살짝 다듬을 수
+있게 합니다. **사람이 정한 SPEC이 항상 최종 결정권을 가지며, 학습 결과는 그 위에 작은 조정만
+더할 수 있습니다** (펌웨어가 이 범위를 다시 한번 강제로 clamp합니다). MLP가 학습되어
+`MLP_WEIGHTS_TRAINED=1`이 되면 이 보정은 더 이상 쓰이지 않습니다(신경망이 이미 데이터로 직접
+학습했으므로).
+
+```
+python ml_model/train_threshold_calibration.py --val-sessions <새 세션 ID>
+```
+
+- 아래 "1~3. 데이터 수집" 절차(수동 라벨링 0/1/2)를 MLP 학습과 그대로 공유합니다 — 온도·습도만
+  쓰므로 가스/기압 컬럼은 무시됩니다.
+- 결과: `firmware/include/qos_calibration.h`(펌웨어용, `QOS_CALIBRATION_TRAINED=1`),
+  `ml_model/data/threshold_calibration_report.json`(학습된 delta, SPEC 대비 macro-F1 비교).
+- **현재 상태:** `raw_dataset.csv`가 비어 있어 아직 학습된 적이 없습니다
+  (`QOS_CALIBRATION_TRAINED 0`, delta 전부 0.0 → SPEC 그대로 사용).
+- SPEC보다 나은지 애매하면("사실상 같습니다") 보정의 실효성을 논문에서 과장하지 마세요 —
+  스크립트가 검증 데이터로 그 판단을 자동으로 알려줍니다.
+
+---
+
+아래는 위 두 스크립트가 공유하는 데이터 수집 절차와, 5-5-1 MLP 학습에 대한 상세 설명입니다.
+
+> **현재 상태:** `firmware/include/mlp_weights.h`의 값은 **아직 학습되지 않은 임시값**입니다
+> (`MLP_WEIGHTS_TRAINED 0`, 다른 AI가 만든 숫자로 시작된 값). 아래 절차를 마치면 학습된 값으로
+> 교체되고, 부팅 시 시리얼에 "TinyML이 QoS를 직접 결정합니다"라고 표시됩니다.
 
 ## 입력 특징
 | 특징 | 단위 | `--features` | 성격 |
@@ -17,7 +64,9 @@ Gingerbread 노드는 BME680 센서값으로 "위험 점수(0~1)"를 계산하�
 | **가스 비율** | 0~1 | `gasr` | **가스 저항 ÷ 기준값.** 세션마다 다른 기준값을 상쇄함 |
 
 앞의 4개가 BME680이 측정하는 값 전부이고, `gasr`은 가스 저항에서 파생한 값입니다.
-**기본은 `temp,hum,gasr`** 입니다 (아래 실험 근거). 다른 조합은 `--features`로 고를 수 있습니다.
+**기본은 `temp,hum`** 입니다 — 펌웨어의 QoS 판단이 온도·습도로 제한되어 있기 때문입니다
+(`main_gingerbread.cpp` 참조). 다른 조합은 `--features`로 실험해볼 수 있지만, 실제로 펌웨어에
+반영하려면 `main_gingerbread.cpp`와 `mlp_weights.h`의 설계 의도도 함께 바꿔야 합니다.
 
 ### 가스 비율이란
 ```
@@ -151,11 +200,11 @@ pio run -e board1_gingerbread -t upload
 ```
 시리얼 모니터의 부팅 로그에서 반드시 확인:
 ```
-[MLP] 가중치: 학습된 값 (ml_model/train.py 생성)      ← "⚠ 경고: ... 임시값"이 보이면 헤더가 안 바뀐 것
-[MLP] QoS 임계값: QoS1 >= 0.xxx | QoS2 >= 0.xxx
+[MLP] ✓ TinyML이 QoS를 직접 결정합니다 (학습된 값, ml_model/train.py 생성)   ← "⚠ 아직 학습되지 않음"이 보이면 헤더가 안 바뀐 것
+[MLP] 위험 점수 임계값: QoS1 ≥ 0.xxx | QoS2 ≥ 0.xxx
 ```
-추론 로그의 `가스비율`이 **부팅 후 약 10분 동안 1.000**이다가 그 뒤부터 변하는지, 그리고 **상온에서 QoS 0**,
-가열/가스 자극 시 QoS 1 → QoS 2(TCP)로 바뀌는지 직접 확인하세요.
+QoS 판정 로그에 `(NN)`이 붙는지(규칙 폴백이면 `(rule)`이 붙습니다), 그리고 **상온에서 QoS 0**,
+가열 자극 시 QoS 1 → QoS 2(TCP)로 바뀌는지 직접 확인하세요.
 
 ## 7. 논문에 쓸 때
 - 이 모델은 **직접 수집한 N개 샘플(세션 M개, 조건 ...)로 학습한 5-5-1 MLP**이며, 사용한 특징과 라벨 정의(수동/온도 구간)를 밝힌다.

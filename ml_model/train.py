@@ -4,9 +4,9 @@ ml_model/train.py
 수집한 데이터(ml_model/data/raw_dataset.csv)로 위험 점수 MLP(5-5-1)를 학습하고,
 펌웨어용 가중치 헤더(firmware/include/mlp_weights.h)로 내보냅니다.
 
-  python ml_model/train.py                              # 권장 특징(온도, 습도, 가스비율)으로 학습
+  python ml_model/train.py                              # 기본 특징(온도, 습도)으로 학습 — main_gingerbread.cpp가 쓰는 조합
   python ml_model/train.py --compare-features           # 특징 조합별 성능을 비교만 하고 종료
-  python ml_model/train.py --features temp,gasr         # 고른 특징만 사용
+  python ml_model/train.py --features temp,hum,gasr     # 다른 조합을 실험해보고 싶을 때 (펌웨어 반영은 별도)
   python ml_model/train.py --val-sessions 20260922-1030 # 이 세션 전체를 검증용으로 (새 세션 일반화 확인)
 
 입력 특징 (펌웨어 입력 순서와 같음)
@@ -15,11 +15,14 @@ ml_model/train.py
   앞의 4개가 BME680이 측정하는 값 전부이고, gasr 은 가스저항에서 파생한 값입니다.
   --features 로 쓸 것을 고르며, 쓰지 않는 특징의 입력 가중치는 0으로 고정됩니다.
 
-  기본값이 temp,hum,gasr 인 이유 (합성 데이터 실험, README 참조)
+  기본값이 temp,hum 인 이유
+    · main_gingerbread.cpp의 QoS 판단 기준을 온도·습도로만 제한하기로 결정했습니다(가스/기압은
+      정보성 로깅에만 씀). 이 기본값을 바꿔서 학습해도 펌웨어가 gas/pres 열의 가중치를 계속
+      0으로 취급하지는 않으므로, gas/pres를 실제로 쓰려면 firmware/include/mlp_weights.h의
+      해당 주석과 main_gingerbread.cpp의 설계 의도도 함께 바꿔야 합니다.
     · 가스저항 절대값(gas)은 센서 개체·예열·환경에 따라 정상 기준이 세션마다 크게 달라 새 세션에서 무너집니다.
-      기준값 대비 비율(gasr)은 이 차이를 상쇄합니다.
     · 기압(pres)은 위험의 직접 지표가 아니며 세션을 구별하는 "지문"이 되어 검증 성능을 부풀릴 수 있습니다.
-    필요하면 --features 로 넣을 수 있고, --compare-features 로 실제로 도움이 되는지 확인할 수 있습니다.
+    다른 조합이 실제로 도움이 되는지는 --compare-features 로 확인할 수 있습니다.
 
 모델 (펌웨어 mlp_inference.h와 동일한 구조)
   x = (입력 - mean) / std  →  h = ReLU(W1 x + b1)  [5 노드]  →  score = Sigmoid(W2 h + b2)
@@ -69,7 +72,7 @@ FEATURE_ORDER = ["temp", "hum", "gas", "pres", "gasr"]     # 펌웨어 입력 �
 FEATURE_COLUMN = {"temp": "temp", "hum": "hum", "gas": "gas_kohm", "pres": "pres_hpa", "gasr": "gas_ratio"}
 FEATURE_NAME = {"temp": "온도", "hum": "습도", "gas": "가스저항", "pres": "기압", "gasr": "가스비율"}
 FEATURE_UNIT = {"temp": "°C", "hum": "%", "gas": "kΩ", "pres": "hPa", "gasr": ""}
-DEFAULT_FEATURES = "temp,hum,gasr"
+DEFAULT_FEATURES = "temp,hum"  # [2026-09] QoS 판단을 온도·습도로만 제한하기로 결정 (main_gingerbread.cpp 참조)
 N_IN = len(FEATURE_ORDER)
 N_HIDDEN = 5                                              # 펌웨어의 은닉 노드 수 (mlp_inference.h와 같아야 함)
 SOFT_TARGET = np.array([0.0, 0.5, 1.0])                   # 라벨 0/1/2 → 목표 점수

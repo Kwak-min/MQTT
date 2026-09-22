@@ -13,7 +13,7 @@ QoS 레벨, sleep_mode_ratio)으로부터 ESP32-S3 소비 전력을 추정합니
     TX_MA  = 251 mA  (전송 피크 전류 — 802.11b 2.4 GHz)
     RX_MA  =  78 mA  (수신 대기 전류)
     IDLE_MA = 20 mA  (WiFi 연결 유지, CPU 동작)
-    SLEEP_MA = 0.01 mA (Light Sleep 전류)
+    SLEEP_MA = 0.01 mA (Deep Sleep 전류 — Gingerbread는 esp_deep_sleep_start() 사용)
     VCC    =   3.3 V (공급 전압)
 
   QoS별 TX/RX 위상 비율 (IEEE Access 2024 Table III 기반):
@@ -73,7 +73,7 @@ RX_MA: float = 78.0
 #: 주의: 데이터시트 기반 가정값입니다. 실측(INA226 등)으로 보정하는 것을 권장합니다.
 IDLE_MA: float = 20.0
 
-#: Light Sleep 전류 (mA)
+#: Deep Sleep 전류 (mA) — Gingerbread 펌웨어는 사이클 사이 esp_deep_sleep_start()를 사용합니다.
 SLEEP_MA: float = 0.01
 
 #: 공급 전압 (V) — ESP32-S3 3.3V 레귤레이터 기준
