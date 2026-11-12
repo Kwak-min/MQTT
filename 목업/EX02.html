@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>실험 개요 · Gingerbread vs Standard MQTT (목업)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  color-scheme: dark;
+  --bg-void: #0c0f13; --bg-panel: #12161c; --bg-panel-raised: #171c24; --bg-inset: #0a0d11;
+  --border-hair: #262d38; --border-hair-strong: #333c4a;
+  --text-primary: #e8ebf0; --text-secondary: #8a93a3; --text-tertiary: #5b6472;
+  --signal-teal: #4fd1c0; --signal-teal-dim: #2c6b62; --signal-amber: #e2a24c;
+  --signal-violet: #b09bef; --signal-red: #e2634c; --signal-green: #7bc67e;
+  --radius-sm: 3px; --radius-md: 5px;
+  --font-ui: "IBM Plex Sans KR", "Pretendard", -apple-system, "Malgun Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg-void); color: var(--text-primary); font-family: var(--font-ui); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+h1, h2 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+p { margin: 0; }
+button { font-family: inherit; }
+:focus-visible { outline: 2px solid var(--signal-teal); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.app { display: flex; flex-direction: column; height: 100%; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 24px; height: 56px; flex: 0 0 56px; border-bottom: 1px solid var(--border-hair); background: var(--bg-panel); }
+.topbar .t1 { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+.topbar .t2 { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+.main { flex: 1 1 auto; overflow-y: auto; padding: 28px 32px 64px; }
+@media (max-width: 640px) { .topbar { padding: 0 16px; } .main { padding: 18px 16px 48px; } }
+
+.page-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.page-header h1 { font-size: 20px; }
+.page-sub { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+
+.panel { background: var(--bg-panel); border: 1px solid var(--border-hair); border-radius: var(--radius-md); }
+.panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border-hair); }
+.panel-header h2 { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
+.panel-body { padding: 16px; }
+.grid-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.grid-two { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; margin-top: 16px; }
+@media (max-width: 1080px) { .grid-two { grid-template-columns: 1fr; } }
+.mt16 { margin-top: 16px; }
+
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-hair-strong); background: var(--bg-panel-raised); color: var(--text-primary); font-size: 13px; cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease; }
+.btn:hover { border-color: var(--signal-teal); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: var(--signal-teal-dim); border-color: var(--signal-teal); color: #eafff9; }
+.btn.on { background: var(--bg-panel-raised); }
+.btn.off { background: var(--bg-inset); }
+
+.tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border-hair-strong); color: var(--text-secondary); }
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; display: inline-block; }
+@media (prefers-reduced-motion: no-preference) { .dot-pulse { animation: pulse 1.8s ease-in-out infinite; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* stat tile */
+.tile { padding: 14px 16px; border-left: 2px solid var(--border-hair); }
+.tile .lbl { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+.tile .val { display: flex; align-items: baseline; gap: 5px; }
+.tile .num { font-size: 24px; font-weight: 600; }
+.tile .unit { font-size: 13px; color: var(--text-tertiary); }
+.tile .sub { font-size: 11px; color: var(--text-tertiary); margin-top: 6px; }
+
+/* chart */
+.chart svg { width: 100%; display: block; }
+.legend { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
+.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.legend .item .name { color: var(--text-secondary); }
+.empty { padding: 40px 20px; text-align: center; color: var(--text-secondary); font-size: 12px; }
+
+/* bars */
+.bars { display: flex; flex-direction: column; gap: 14px; }
+.bar-top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; color: var(--text-secondary); }
+.bar-top .l { display: flex; align-items: center; gap: 6px; }
+.bar-top .v { color: var(--text-primary); }
+.bar-track { height: 10px; border-radius: 999px; background: var(--bg-inset); overflow: hidden; border: 1px solid var(--border-hair); }
+.bar-fill { height: 100%; border-radius: 999px; transition: width 300ms ease; }
+
+/* board rows */
+.boards { display: flex; flex-direction: column; gap: 14px; margin-bottom: 16px; }
+.board { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-inset); border: 1px solid var(--border-hair); }
+.board .nm { display: flex; align-items: center; gap: 8px; min-width: 140px; font-size: 13px; }
+.board .vals { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.mini .k { font-size: 10px; color: var(--text-tertiary); }
+.mini .v { font-size: 13px; }
+.unsup { font-size: 12px; color: var(--text-tertiary); font-style: italic; white-space: nowrap; }
+.unsup small { font-size: 10px; margin-left: 4px; font-style: normal; }
+
+/* payload */
+.tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.tabs .btn { padding: 6px 10px; font-size: 12px; }
+pre.payload { margin: 0; padding: 12px; background: var(--bg-inset); border: 1px solid var(--border-hair); border-radius: var(--radius-sm); font-size: 12px; line-height: 1.5; overflow: auto; max-height: 220px; }
+
+/* control */
+.ctl { display: flex; flex-direction: column; gap: 18px; }
+.ctl .cap { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.row.gap10 { gap: 10px; }
+
+.notice { margin-bottom: 14px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-inset); border: 1px solid; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.notice .dot { margin-right: 8px; }
+.mock-banner { margin-bottom: 14px; font-size: 11px; color: var(--text-tertiary); }
+code { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div>
+      <div class="t1">노드 콘솔 · 실험 개요</div>
+      <div class="t2 mono">MQTT · UDP 센서 실험</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div class="tag" id="connTag"><span class="dot" id="connDot"></span><span class="mono" id="connText"></span></div>
+      <div class="tag mono" style="color:var(--text-tertiary)">mock 데이터</div>
+    </div>
+  </header>
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>실험 개요</h1>
+        <p class="page-sub">Gingerbread vs Standard MQTT · 통신 1회당 에너지 소모 비교</p>
+      </div>
+    </div>
+
+    <div id="notice"></div>
+
+    <div class="grid-stats" id="stats"></div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>회당 통신 에너지 추이</h2>
+        <button type="button" class="btn" id="spikeBtn" title="초기 Wi-Fi 연결로 발생하는 이상값(에너지 급증)을 그래프에서 제외합니다"></button>
+      </div>
+      <div class="panel-body chart" id="energyChart"></div>
+    </div>
+
+    <div class="panel mt16">
+      <div class="panel-header"><h2>누적 통신 에너지</h2></div>
+      <div class="panel-body"><div class="bars" id="bars"></div></div>
+    </div>
+
+    <div class="grid-two">
+      <div class="panel">
+        <div class="panel-header"><h2>센서 · 단말 상태</h2></div>
+        <div class="panel-body">
+          <div class="boards" id="boards"></div>
+          <div class="chart" id="gasChart"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h2>최신 페이로드</h2></div>
+        <div class="panel-body">
+          <div class="tabs" id="payloadTabs"></div>
+          <pre class="payload mono" id="payloadBody"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel mt16">
+      <div class="panel-header"><h2>실험 제어</h2></div>
+      <div class="panel-body">
+        <div class="ctl">
+          <div>
+            <div class="cap">전송 주기 (두 보드 동시 적용)</div>
+            <div class="row" id="intervals"></div>
+          </div>
+          <div class="row gap10">
+            <button class="btn" id="truncateBtn">로그 초기화 (Truncate)</button>
+            <button class="btn btn-primary" id="csvGb"></button>
+            <button class="btn btn-primary" id="csvMqtt"></button>
+            <span class="tag" id="statusTag" style="margin-left:auto"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ---------- 상수 · 설정 ---------- */
+  const MJ_PER_MWH = 3600;
+  const INTERVALS = [1, 5, 10, 30, 60];
+  const NODES = {
+    gb:   { id: "ESP32-Gingerbread", name: "Gingerbread",   color: "var(--signal-violet)", fw: "gingerbread",   seed: 22, baseTemp: 21.8, baseGas: 110, energy: { base: 11 / 3600, jitter: 3 / 3600 } },
+    mqtt: { id: "ESP32-StandardMQTT", name: "Standard MQTT", color: "var(--signal-teal)",   fw: "standard_mqtt", seed: 11, baseTemp: 23.4, baseGas: 95,  energy: { base: 38 / 3600, jitter: 8 / 3600 } },
+  };
+  const SESSION_LABEL = { active: "수신 중", asleep: "수면 중", timed_out: "응답 없음", unknown: "상태 미상" };
+  const SESSION_COLOR = { active: "var(--signal-green)", asleep: "var(--signal-amber)", timed_out: "var(--signal-red)", unknown: "var(--text-tertiary)" };
+  const CONN_LABEL = { connected: "연결됨", connecting: "연결 중" };
+  const CONN_COLOR = { connected: "var(--signal-green)", connecting: "var(--signal-amber)" };
+
+  /* ---------- 유틸 ---------- */
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const round = (v, d) => { const f = 10 ** d; return Math.round(v * f) / f; };
+  const seeded = (seed) => { let s = seed % 2147483647; if (s <= 0) s += 2147483646; return () => (s = (s * 16807) % 2147483647, (s - 1) / 2147483646); };
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const fmtMj = (mwh) => `${(mwh * MJ_PER_MWH).toFixed(1)} mJ`;
+  const fmtMwh = (mwh) => `${mwh.toFixed(3)} mWh`;
+  const fmtGas = (k) => `${k.toFixed(1)} kΩ`;
+  const fmtRel = (ts) => { const s = Math.round((Date.now() - ts) / 1000); if (s < 5) return "방금"; if (s < 60) return `${s}초 전`; return `${Math.round(s / 60)}분 전`; };
+  const fmtUptime = (s) => { const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h > 0 ? `${h}시간 ${m}분` : `${m}분`; };
+
+  /* ---------- 목업 데이터 생성 (원본 mockSource.ts 를 단순화) ---------- */
+  class Sim {
+    constructor(node) {
+      this.node = node;
+      this.rand = seeded(node.seed);
+      this.powerRand = seeded(node.seed * 10);
+      this.temp = node.baseTemp;
+      this.hum = 45 + this.rand() * 10;
+      this.gas = node.baseGas;
+      this.pressure = 1013 + this.rand() * 6 - 3;
+      this.battery = 4.1;
+      this.uptime = 0;
+      this.msgId = 0;
+      this.telemetry = [];
+      this.power = [];
+      this.powerCount = 0;
+      for (let i = 0; i < 40; i++) this.tick(Date.now() - (40 - i) * 2000);
+      for (let i = 0; i < 60; i++) this.powerTick(Date.now() - (60 - i) * 3000);
+    }
+    tick(ts = Date.now()) {
+      const r = this.rand;
+      this.msgId++;
+      this.temp += (r() - 0.5) * 0.3;
+      this.hum = clamp(this.hum + (r() - 0.5) * 1.2, 30, 80);
+      this.pressure += (r() - 0.5) * 0.4;
+      this.gas = clamp(this.gas + (r() - 0.52) * 4, 20, 180);
+      this.battery = clamp(this.battery - 0.00004 + (r() - 0.5) * 0.0005, 3.3, 4.2);
+      this.uptime += 2;
+      const gas = round(this.gas, 1);
+      const gb = this.node.fw === "gingerbread";
+      const s = {
+        msgId: this.msgId, ts,
+        temp: round(this.temp, 2), hum: round(this.hum, 1), gas,
+        gasValid: gas >= 25 && gas <= 175 && r() > 0.03,
+        pressure: round(this.pressure, 1), rssi: Math.round(-58 - r() * 22),
+        battery: round(this.battery, 3), uptime: this.uptime,
+        deviceState: gb ? (this.msgId % 5 === 0 ? "active" : "asleep") : undefined,
+      };
+      const payload = { temp: s.temp, hum: s.hum, gas: s.gas, qos: 1, rtt: 0.0, retry: 0, sleep_r: gb ? 0.82 : 0.11 };
+      if (gb) { payload.battery = 100; payload.nn = 0.42; } else { payload.pkt = s.msgId; payload.bytes = s.msgId * 96; }
+      s.raw = JSON.stringify(payload, null, 2);
+      this.telemetry.push(s);
+      if (this.telemetry.length > 40) this.telemetry.shift();
+      return s;
+    }
+    powerTick(ts = Date.now()) {
+      const r = this.powerRand, e = this.node.energy;
+      const i = this.powerCount++;
+      const spike = i < 3; // 초기 Wi-Fi 연결 비용이 섞인 구간
+      const raw = e.base + (r() - 0.5) * e.jitter * 2;
+      const energyMwh = spike ? raw * (4 + r() * 3) : Math.max(raw, e.base * 0.4);
+      this.power.push({ ts, energyMwh: round(energyMwh, 8), spike });
+      if (this.power.length > 60) this.power.shift();
+    }
+  }
+  const sims = { gb: new Sim(NODES.gb), mqtt: new Sim(NODES.mqtt) };
+
+  /* ---------- 상태 ---------- */
+  const state = {
+    conn: "connecting",
+    spikeFilter: true,
+    intervalS: null,
+    applying: false,
+    truncating: false,
+    payloadNode: "gb",
+    notice: null,
+    sessions: { gb: "asleep", mqtt: "active" },
+    truncatedAt: { gb: 0, mqtt: 0 }, // 로그 초기화 시 해당 시각 이전 샘플은 숨김
+  };
+
+  /* ---------- 계산 ---------- */
+  const powerOf = (k) => sims[k].power.filter((p) => p.ts >= state.truncatedAt[k]);
+  const filteredPower = (k) => { const p = powerOf(k); return state.spikeFilter ? p.filter((s) => !s.spike) : p; };
+  const energySummary = (k) => {
+    const f = filteredPower(k);
+    if (!f.length) return { avg: null, total: 0 };
+    const total = f.reduce((a, s) => a + s.energyMwh, 0);
+    return { avg: total / f.length, total };
+  };
+  const experimentStatus = () => {
+    const ss = [state.sessions.gb, state.sessions.mqtt];
+    if (ss.includes("active")) return "active";
+    if (ss.includes("asleep")) return "asleep";
+    return "unknown";
+  };
+
+  /* ---------- 렌더: 부품 ---------- */
+  function lineChart(series, height = 180, fmt) {
+    const all = series.flatMap((s) => s.values);
+    if (!all.length) return `<div class="empty" style="height:${height}px;display:flex;align-items:center;justify-content:center">데이터를 기다리는 중…</div>`;
+    const min = Math.min(...all), max = Math.max(...all), span = max - min || 1, W = 100, padY = 10;
+    const pts = (vals) => vals.map((v, i) => `${(i / Math.max(vals.length - 1, 1)) * W},${padY + (1 - (v - min) / span) * (100 - padY * 2)}`).join(" ");
+    const lines = series.map((s) => `<polyline points="${pts(s.values)}" fill="none" stroke="${s.color}" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join("");
+    const legend = series.map((s) => {
+      const last = s.values[s.values.length - 1];
+      return `<div class="item"><span class="dot" style="background:${s.color}"></span><span class="name">${esc(s.label)}</span>${last !== undefined ? `<span class="mono">${fmt ? fmt(last) : last.toFixed(1)}</span>` : ""}</div>`;
+    }).join("");
+    return `<svg viewBox="0 0 ${W} 100" preserveAspectRatio="none" style="height:${height}px"><line x1="0" y1="50" x2="${W}" y2="50" stroke="var(--border-hair)" stroke-width="0.3"/>${lines}</svg><div class="legend">${legend}</div>`;
+  }
+
+  const tile = (label, value, unit, accent, sub) =>
+    `<div class="panel tile" ${accent ? `style="border-left-color:${accent}"` : ""}><div class="lbl">${label}</div><div class="val"><span class="num mono">${value}</span>${unit ? `<span class="unit mono">${unit}</span>` : ""}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+
+  const miniVal = (label, value, reason) =>
+    `<div class="mini"><div class="k">${label}</div>${value === null
+      ? `<span class="unsup mono" title="게이트웨이 API 가 이 값을 제공하지 않습니다 — ${esc(reason)}">데이터 없음<small>(백엔드 미지원)</small></span>`
+      : `<div class="v mono">${value}</div>`}</div>`;
+
+  const stateBadge = (st) => {
+    if (!st) return `<span class="tag" style="color:var(--text-tertiary)"><span class="dot" style="background:var(--text-tertiary)"></span>해당 없음</span>`;
+    const c = st === "active" ? "var(--signal-green)" : "var(--text-tertiary)";
+    return `<span class="tag mono" style="border-color:${c};color:${c}"><span class="dot ${st === "active" ? "dot-pulse" : ""}" style="background:${c}"></span>${st.toUpperCase()}</span>`;
+  };
+  const gasTag = (v) => {
+    const c = v ? "var(--signal-green)" : "var(--signal-red)";
+    return `<span class="tag mono" style="border-color:${c};color:${c}"><span class="dot" style="background:${c}"></span>gas_valid ${v}</span>`;
+  };
+
+  function boardRow(k) {
+    const n = NODES[k], t = sims[k].telemetry, s = t[t.length - 1];
+    const sess = state.sessions[k];
+    const dev = s.deviceState ?? (sess === "active" ? "active" : sess === "asleep" ? "asleep" : undefined);
+    return `<div class="board">
+      <div class="nm"><span class="dot" style="background:${n.color}"></span><span>${n.name}</span></div>
+      <div class="vals">
+        ${miniVal("온도", `${s.temp.toFixed(1)}°C`)}
+        ${miniVal("습도", `${s.hum.toFixed(1)}%`)}
+        ${miniVal("가스", fmtGas(s.gas))}
+        ${miniVal("기압", `${s.pressure.toFixed(1)} hPa`)}
+        ${miniVal("RSSI", `${s.rssi} dBm`)}
+        ${miniVal("배터리", `${s.battery.toFixed(3)} V`)}
+        ${miniVal("가동시간", fmtUptime(s.uptime))}
+        ${stateBadge(dev)}
+        ${gasTag(s.gasValid)}
+        <span class="mono" style="font-size:11px;color:var(--text-tertiary)">${fmtRel(s.ts)}</span>
+      </div>
+    </div>`;
+  }
+
+  /* ---------- 렌더: 전체 ---------- */
+  function render() {
+    // 연결 뱃지
+    $("connDot").style.background = CONN_COLOR[state.conn];
+    $("connDot").className = "dot" + (state.conn === "connected" ? " dot-pulse" : "");
+    $("connText").textContent = CONN_LABEL[state.conn];
+
+    // 알림
+    $("notice").innerHTML = state.notice
+      ? `<div class="notice" style="border-color:${state.notice.kind === "error" ? "var(--signal-red)" : "var(--signal-teal)"}"><span class="dot" style="background:${state.notice.kind === "error" ? "var(--signal-red)" : "var(--signal-teal)"}"></span>${esc(state.notice.text)}</div>`
+      : "";
+
+    const gb = energySummary("gb"), mq = energySummary("mqtt");
+    const savings = gb.avg !== null && mq.avg !== null && mq.avg > 0 ? ((mq.avg - gb.avg) / mq.avg) * 100 : null;
+    const st = experimentStatus();
+
+    $("stats").innerHTML =
+      tile("실험 / 연결 상태", SESSION_LABEL[st], "", SESSION_COLOR[st], `연결 ${CONN_LABEL[state.conn]}`) +
+      tile("Gingerbread 1회 통신 에너지", gb.avg !== null ? (gb.avg * MJ_PER_MWH).toFixed(1) : "-", "mJ", "var(--signal-violet)", NODES.gb.name) +
+      tile("Standard MQTT 1회 통신 에너지", mq.avg !== null ? (mq.avg * MJ_PER_MWH).toFixed(1) : "-", "mJ", "var(--signal-teal)", NODES.mqtt.name) +
+      tile("Gingerbread 상대 에너지 절감률", savings !== null ? savings.toFixed(0) : "-", "%", savings !== null && savings >= 0 ? "var(--signal-green)" : "var(--signal-red)", "Standard MQTT 대비");
+
+    // 스파이크 버튼
+    const sb = $("spikeBtn");
+    sb.className = "btn " + (state.spikeFilter ? "on" : "off");
+    sb.style.borderColor = state.spikeFilter ? "var(--signal-teal)" : "var(--border-hair-strong)";
+    sb.innerHTML = `<span class="dot" style="background:${state.spikeFilter ? "var(--signal-teal)" : "var(--text-tertiary)"}"></span><span style="font-size:12px">스파이크 필터 ${state.spikeFilter ? "켜짐" : "꺼짐"}</span>`;
+
+    // 에너지 추이
+    $("energyChart").innerHTML = lineChart([
+      { label: `${NODES.mqtt.name} (mJ)`, color: NODES.mqtt.color, values: filteredPower("mqtt").map((s) => s.energyMwh) },
+      { label: `${NODES.gb.name} (mJ)`, color: NODES.gb.color, values: filteredPower("gb").map((s) => s.energyMwh) },
+    ], 180, fmtMj);
+
+    // 누적 막대
+    const bars = [{ n: NODES.gb, v: gb.total }, { n: NODES.mqtt, v: mq.total }];
+    const max = Math.max(...bars.map((b) => b.v), Number.EPSILON);
+    $("bars").innerHTML = bars.map((b) => `<div>
+      <div class="bar-top"><span class="l"><span class="dot" style="background:${b.n.color}"></span>${b.n.name}</span><span class="v mono">${fmtMwh(b.v)}</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.max((b.v / max) * 100, 2)}%;background:${b.n.color}"></div></div></div>`).join("");
+
+    // 센서 · 단말
+    $("boards").innerHTML = boardRow("gb") + boardRow("mqtt");
+    $("gasChart").innerHTML = lineChart([
+      { label: `${NODES.mqtt.name} 가스저항 (kΩ)`, color: NODES.mqtt.color, values: sims.mqtt.telemetry.map((s) => s.gas) },
+      { label: `${NODES.gb.name} 가스저항 (kΩ)`, color: NODES.gb.color, values: sims.gb.telemetry.map((s) => s.gas) },
+    ], 140, fmtGas);
+
+    // 페이로드
+    $("payloadTabs").innerHTML = ["gb", "mqtt"].map((k) => {
+      const active = state.payloadNode === k;
+      return `<button class="btn" data-pk="${k}" style="border-color:${active ? NODES[k].color : "var(--border-hair-strong)"};background:${active ? "var(--bg-panel-raised)" : "var(--bg-inset)"}"><span class="dot" style="background:${NODES[k].color}"></span><span>${NODES[k].name}</span></button>`;
+    }).join("");
+    const tl = sims[state.payloadNode].telemetry;
+    $("payloadBody").textContent = tl[tl.length - 1].raw;
+
+    // 제어
+    $("intervals").innerHTML = INTERVALS.map((s) => {
+      const a = state.intervalS === s;
+      return `<button class="btn" data-iv="${s}" ${state.applying ? "disabled" : ""} style="border-color:${a ? "var(--signal-teal)" : "var(--border-hair-strong)"};background:${a ? "var(--bg-panel-raised)" : "var(--bg-inset)"}">${s}초</button>`;
+    }).join("") + (state.applying ? `<span style="font-size:12px;color:var(--text-tertiary)">적용 중…</span>` : "");
+    $("truncateBtn").disabled = state.truncating;
+    $("truncateBtn").textContent = state.truncating ? "초기화 중…" : "로그 초기화 (Truncate)";
+    $("csvGb").textContent = `${NODES.gb.name} CSV 다운로드`;
+    $("csvMqtt").textContent = `${NODES.mqtt.name} CSV 다운로드`;
+    const sc = SESSION_COLOR[st];
+    $("statusTag").style.borderColor = sc;
+    $("statusTag").style.color = sc;
+    $("statusTag").innerHTML = `<span class="dot" style="background:${sc}"></span>${SESSION_LABEL[st]}`;
+  }
+
+  /* ---------- 이벤트 ---------- */
+  const setNotice = (kind, text) => { state.notice = { kind, text }; };
+
+  $("spikeBtn").addEventListener("click", () => { state.spikeFilter = !state.spikeFilter; render(); });
+  $("payloadTabs").addEventListener("click", (e) => { const b = e.target.closest("[data-pk]"); if (b) { state.payloadNode = b.dataset.pk; render(); } });
+  $("intervals").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-iv]"); if (!b) return;
+    const sec = Number(b.dataset.iv);
+    state.applying = true; state.notice = null; render();
+    setTimeout(() => { // 다운링크 전송 지연을 흉내
+      state.applying = false; state.intervalS = sec;
+      setNotice("info", `전송 주기를 ${sec}초로 적용했습니다.`);
+      render();
+    }, 500);
+  });
+  $("truncateBtn").addEventListener("click", () => {
+    if (!window.confirm("로그를 초기화할까요? 헤더만 남고 데이터 본문이 모두 삭제됩니다.")) return;
+    state.truncating = true; state.notice = null; render();
+    setTimeout(() => {
+      state.truncating = false;
+      const now = Date.now();
+      state.truncatedAt.gb = now; state.truncatedAt.mqtt = now;
+      setNotice("info", "로그를 초기화했습니다.");
+      render();
+    }, 300);
+  });
+  const exportCsv = (k) => {
+    const rows = sims[k].telemetry.map((s) => [new Date(s.ts).toISOString(), NODES[k].id, s.msgId, 1, "", "", "", s.temp, s.hum, s.gas, s.gasValid, "", `"${s.raw.replace(/\s+/g, " ").replace(/"/g, '""')}"`].join(","));
+    const csv = "timestamp,client_id,msg_id,qos,topic_id,addr_ip,addr_port,temp,hum,gas,gas_valid,power,raw_payload\n" + rows.join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = `${NODES[k].id}-telemetry.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  };
+  $("csvGb").addEventListener("click", () => exportCsv("gb"));
+  $("csvMqtt").addEventListener("click", () => exportCsv("mqtt"));
+
+  /* ---------- 실시간 갱신 시뮬레이션 ---------- */
+  setTimeout(() => { state.conn = "connected"; render(); }, 350);
+  setInterval(() => { sims.gb.tick(); sims.mqtt.tick(); render(); }, 2000);
+  setInterval(() => { sims.gb.powerTick(); sims.mqtt.powerTick(); }, 3000);
+
+  render();
+})();
+</script>
+</body>
+</html>
