@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gingerbread · 운영 대시보드 목업 (1/2)</title>
+<!--
+  결과보고서용 정적 HTML 목업 1/2 — 운영 대시보드
+  - 외부 의존성 없음(CDN·폰트·이미지·JS 라이브러리 없음). 파일을 더블클릭하면 열립니다.
+  - 차트는 모두 인라인 SVG. 스크립트 없음.
+  - 수치 출처: dashboard/src/data/mock/fixtures.ts (시안 기준 고정 데이터)
+  - 디자인 시안: https://claude.ai/code/artifact/ff2594f4-9acc-4e19-9e5d-e71f6bc3c539
+-->
+<style>
+  /* ---- 디자인 토큰 (시안 05 토큰 시트 = dashboard/src/styles/tokens.css) ---- */
+  :root {
+    color-scheme: light;
+
+    /* 비교 시리즈 — 전 화면 고정 */
+    --series-gingerbread: #2a78d6;
+    --series-legacy: #eb6834;
+
+    /* QoS 순서형 램프 — 파랑 한 색의 명도 3단계 */
+    --qos-0: #86b6ef;
+    --qos-1: #3987e5;
+    --qos-2: #184f95;
+    --qos-0-ink: #0b0b0b;
+    --qos-1-ink: #ffffff;
+    --qos-2-ink: #ffffff;
+
+    /* 상태 — 항상 아이콘 + 라벨과 함께 */
+    --status-normal: #0ca30c;
+    --status-serious-ink: #c2653a;
+    --status-critical-ink: #a8332a;
+    --status-positive-ink: #006300;
+
+    /* 표면 */
+    --surface-page: #efefec;
+    --surface-card: #fcfcfb;
+    --surface-track: #eceae4;
+    --surface-subtle: #f2f1ed;
+    --surface-selected: #eceae4;
+
+    /* 잉크 */
+    --ink-primary: #0b0b0b;
+    --ink-secondary: #52514e;
+    --ink-muted: #898781;
+    --ink-faint: #a9a79f;
+    --ink-inverse: #ffffff;
+
+    /* 선 */
+    --line-grid: #e1e0d9;
+    --line-axis: #c3c2b7;
+    --line-card: rgba(11, 11, 11, 0.1);
+    --line-control: rgba(11, 11, 11, 0.14);
+    --line-threshold: #0b0b0b;
+
+    /* 타이포 (웹폰트 로딩 없음 — 설치된 글꼴로 대체) */
+    --font-sans: 'IBM Plex Sans KR', system-ui, -apple-system, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --text-metric: 600 38px/1 var(--font-sans);
+    --text-title: 600 16px/1.3 var(--font-sans);
+    --text-body: 400 12.5px/1.55 var(--font-sans);
+    --text-body-strong: 500 13px/1.5 var(--font-sans);
+    --text-label: 600 11px/1.2 var(--font-sans);
+    --text-caption: 400 11.5px/1.4 var(--font-sans);
+    --letter-label: 0.08em;
+
+    /* 간격 · 형태 */
+    --radius-card: 10px;
+    --radius-control: 6px;
+    --radius-chip: 4px;
+    --gap-grid: 16px;
+    --page-max: 1440px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-width: 320px;
+    background: var(--surface-page);
+    color: var(--ink-primary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  svg text { font-family: var(--font-sans); }
+
+  /* ---- 전역 헤더 ---- */
+  .app-header {
+    display: flex; align-items: center; gap: 32px; flex-wrap: wrap;
+    min-height: 60px; padding: 10px 40px;
+    background: var(--surface-card); border-bottom: 1px solid var(--line-card);
+  }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font: 600 15px/1 var(--font-sans); letter-spacing: -0.01em; }
+  .nav { display: flex; gap: 4px; }
+  .nav span { font: 500 13.5px/1 var(--font-sans); color: var(--ink-secondary); padding: 8px 14px; border-radius: var(--radius-control); }
+  .nav span[aria-current="page"] { font-weight: 600; color: var(--ink-primary); background: var(--surface-selected); }
+  .nav small { color: var(--ink-faint); font-weight: 400; font-size: inherit; }
+  .header-meta { margin-left: auto; display: inline-flex; align-items: center; gap: 12px; font: var(--text-body); color: var(--ink-muted); }
+  .chip-mock { font: var(--text-caption); color: var(--ink-secondary); border: 1px solid var(--line-control); border-radius: var(--radius-chip); padding: 3px 8px; }
+
+  /* ---- 레이아웃 ---- */
+  .page { max-width: var(--page-max); margin: 0 auto; padding: 24px 40px 48px; display: flex; flex-direction: column; gap: var(--gap-grid); }
+  .grid { display: grid; gap: var(--gap-grid); }
+  .grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .grid--panels { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; }
+
+  /* ---- 카드 ---- */
+  .card {
+    background: var(--surface-card); border: 1px solid var(--line-card); border-radius: var(--radius-card);
+    padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; min-width: 0;
+  }
+  .card__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .card__title { font: var(--text-title); margin: 0; }
+  .card__title small { color: var(--ink-muted); font-weight: 400; font-size: inherit; }
+  .card__meta { font: var(--text-caption); color: var(--ink-muted); }
+  .card__body { flex: 1 1 auto; }
+  .card__foot { border-top: 1px solid var(--line-grid); padding-top: 11px; font: var(--text-body); color: var(--ink-secondary); }
+  .label { font: var(--text-label); letter-spacing: var(--letter-label); color: var(--ink-muted); }
+
+  /* ---- 상태 스트립 ---- */
+  .status-strip { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 12px 20px; padding: 13px 20px; }
+  .status-strip .divider { width: 1px; height: 18px; background: var(--line-grid); }
+  .pill { display: inline-flex; align-items: center; gap: 7px; }
+  .pill strong { font: var(--text-body-strong); }
+  .pill .detail, .strip-text { font: var(--text-body); color: var(--ink-secondary); }
+  .strip-muted { font: var(--text-body); color: var(--ink-muted); }
+  .spacer { flex-grow: 1; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-normal); display: inline-block; }
+  .qos-chip { display: inline-block; font: 600 11px/1 var(--font-sans); padding: 3px 7px; border-radius: var(--radius-chip); }
+  .qos-chip--2 { background: var(--qos-2); color: var(--qos-2-ink); }
+
+  /* ---- KPI 카드 ---- */
+  .kpi { gap: 12px; padding: 18px 20px; }
+  .kpi__value-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
+  .kpi__value { font: var(--text-metric); letter-spacing: -0.02em; white-space: nowrap; }
+  .kpi__unit { font: 500 15px/1 var(--font-sans); color: var(--ink-secondary); margin-left: 3px; letter-spacing: 0; }
+  .kpi__foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-top: 1px solid var(--line-grid); padding-top: 10px; min-height: 31px; font: var(--text-body); color: var(--ink-secondary); }
+  .spark { flex: none; overflow: visible; }
+  .delta {
+    display: inline-flex; align-items: center; font: 600 12px/1 var(--font-sans);
+    padding: 4px 7px; border-radius: var(--radius-chip); background: var(--surface-subtle);
+  }
+  .delta--good { color: var(--status-positive-ink); }
+
+  /* ---- 게이지 (Network Quality) ---- */
+  .gauges { display: flex; flex-direction: column; gap: 18px; }
+  .gauge__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .gauge__name { font: var(--text-body-strong); }
+  .gauge__name small { color: var(--ink-muted); font-weight: 400; font-size: inherit; }
+  .gauge__value { font: 600 17px/1 var(--font-sans); white-space: nowrap; }
+  .gauge__value small, .cmp__value small { font: var(--text-caption); color: var(--ink-secondary); margin-left: 2px; }
+  .gauge svg { display: block; overflow: visible; }
+
+  /* ---- 비교 막대 ---- */
+  .cmp-group + .cmp-group { margin-top: 20px; }
+  .cmp__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .cmp__title { font: var(--text-body-strong); }
+  .cmp__plot { position: relative; padding-right: 96px; }
+  .cmp__plot svg { display: block; width: 100%; overflow: visible; }
+  .cmp__value { position: absolute; right: 0; width: 88px; height: 28px; line-height: 28px; text-align: right; font: 600 20px/28px var(--font-sans); white-space: nowrap; }
+
+  /* ---- QoS 누적 막대 ---- */
+  .legend { display: inline-flex; gap: 14px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; font: var(--text-caption); color: var(--ink-secondary); }
+  .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+  .qos-row + .qos-row { margin-top: 16px; }
+  .qos-row__label { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+  .qos-row__label strong { font: var(--text-body-strong); }
+  .qos-row__label em { font: var(--text-caption); font-style: normal; color: var(--ink-muted); }
+  .qos-row svg { display: block; }
+
+  /* ---- SVG 채움 클래스 (토큰만 사용) ---- */
+  .f-gb { fill: var(--series-gingerbread); }
+  .f-legacy { fill: var(--series-legacy); }
+  .f-track { fill: var(--surface-track); }
+  .f-subtle { fill: var(--surface-subtle); }
+  .f-grid { fill: var(--line-grid); }
+  .f-q0 { fill: var(--qos-0); }
+  .f-q1 { fill: var(--qos-1); }
+  .f-q2 { fill: var(--qos-2); }
+  .t-q0 { fill: var(--qos-0-ink); }
+  .t-q1 { fill: var(--qos-1-ink); }
+  .t-q2 { fill: var(--qos-2-ink); }
+  .seg { stroke: var(--surface-card); stroke-width: 2; }
+  .seg-text { font: 600 12.5px/1 var(--font-sans); }
+  .axis-text { font: var(--text-caption); fill: var(--ink-muted); }
+  .th-text { font: var(--text-caption); fill: var(--ink-secondary); }
+  .row-text { font: var(--text-body-strong); fill: var(--ink-primary); }
+  .s-threshold { stroke: var(--line-threshold); }
+  .s-baseline { stroke: var(--ink-primary); }
+  .s-dash { stroke: var(--line-grid); }
+  .s-gb { stroke: var(--series-gingerbread); }
+
+  .page-foot { font: var(--text-caption); color: var(--ink-muted); display: flex; gap: 6px 16px; flex-wrap: wrap; }
+
+  /* ---- 반응형: 1440 기준, 1200·1024·720 이하 ---- */
+  @media (max-width: 1200px) {
+    .page { padding: 20px 24px 40px; }
+    .app-header { padding: 10px 24px; gap: 20px; }
+    .grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid--panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .panel--qos { grid-column: 1 / -1; }
+  }
+  @media (max-width: 720px) {
+    .page { padding: 16px 14px 32px; }
+    .app-header { padding: 10px 14px; }
+    .header-meta { margin-left: 0; }
+    .grid--4, .grid--panels { grid-template-columns: minmax(0, 1fr); }
+    .panel--qos { grid-column: auto; }
+    .status-strip .divider, .status-strip .spacer { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <span class="brand">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="15" height="15" rx="3.5" stroke="#0b0b0b" stroke-width="1.6"/>
+      <path d="M6.5 12.5 9 9l2.2 2.2L13.5 7" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    Gingerbread
+  </span>
+  <nav class="nav" aria-label="화면">
+    <span aria-current="page">운영 <small>Operations</small></span>
+    <span>실험 <small>Experiment</small></span>
+    <span>프로토콜 <small>Protocol</small></span>
+  </nav>
+  <span class="header-meta">
+    <span class="chip-mock">MOCK DATA · 정적 목업</span>
+    <span>기준 시각 <span class="mono">2026-09-02 17:50:05</span></span>
+  </span>
+</header>
+
+<main class="page">
+  <h1 class="sr-only">운영 대시보드</h1>
+
+  <!-- 1. 상태 스트립: 상태 3종(네트워크 · 긴급도 · 현재 QoS) -->
+  <section class="card status-strip" aria-label="노드 상태">
+    <span class="label">NODE 1 · ESP32-S3 · 192.168.0.42</span>
+    <span class="divider" aria-hidden="true"></span>
+
+    <span class="pill">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M8 2.6 14.4 13H1.6z" stroke="#c2653a" stroke-width="1.7" stroke-linejoin="round"/>
+        <path d="M8 6.6v3" stroke="#c2653a" stroke-width="1.7" stroke-linecap="round"/>
+      </svg>
+      <strong>네트워크 불안정</strong>
+    </span>
+
+    <span class="pill">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.5" stroke="#a8332a" stroke-width="1.7"/>
+        <path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" stroke="#a8332a" stroke-width="1.7" stroke-linecap="round"/>
+      </svg>
+      <strong>데이터 긴급</strong>
+      <span class="detail">가스 농도 임계 초과</span>
+    </span>
+
+    <span class="pill">
+      <span class="strip-text">현재 QoS</span>
+      <span class="qos-chip qos-chip--2">2</span>
+    </span>
+
+    <span class="spacer"></span>
+
+    <span class="pill">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="strip-text">게이트웨이 연결됨</span>
+      <span class="strip-muted">· 17:50:05 갱신</span>
+    </span>
+    <span class="strip-muted">세션 <span class="mono">nodeB_001</span> · 가동 <span class="mono">01:04:22</span></span>
+  </section>
+
+  <!-- 2. KPI 카드 4장: 값 + 스파크라인 + 베이스라인 대비 증감 -->
+  <div class="grid grid--4">
+    <article class="card kpi">
+      <span class="label">RSSI</span>
+      <div class="kpi__value-row">
+        <span class="kpi__value">−84<span class="kpi__unit">dBm</span></span>
+        <svg class="spark" width="92" height="30" viewBox="0 0 92 30" fill="none" role="img" aria-label="RSSI 추이 −72에서 −84 dBm으로 하락, 임계 −80 dBm 점선">
+          <line x1="0" y1="19.2" x2="92" y2="19.2" class="s-dash" stroke-width="1" stroke-dasharray="3 3"/>
+          <polyline points="0.0,5.7 13.1,9.1 26.3,4.0 39.4,15.8 52.6,14.2 65.7,22.6 78.9,24.3 92.0,26.0" class="s-gb" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+          <circle cx="92" cy="26.0" r="3" class="f-gb" stroke="#fcfcfb" stroke-width="2"/>
+        </svg>
+      </div>
+      <div class="kpi__foot">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2.6 14.4 13H1.6z" stroke="#c2653a" stroke-width="1.7" stroke-linejoin="round"/>
+          <path d="M8 6.6v3" stroke="#c2653a" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        <span>임계 −80 dBm 미달</span>
+      </div>
+    </article>
+
+    <article class="card kpi">
+      <span class="label">전송 성공률</span>
+      <div class="kpi__value-row">
+        <span class="kpi__value">98.5<span class="kpi__unit">%</span></span>
+        <svg class="spark" width="92" height="30" viewBox="0 0 92 30" fill="none" role="img" aria-label="전송 성공률 추이 96.2%에서 98.5%로 상승">
+          <polyline points="0.0,24.2 13.1,18.1 26.3,26.0 39.4,11.9 52.6,13.7 65.7,7.5 78.9,5.8 92.0,4.0" class="s-gb" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+          <circle cx="92" cy="4.0" r="3" class="f-gb" stroke="#fcfcfb" stroke-width="2"/>
+        </svg>
+      </div>
+      <div class="kpi__foot">
+        <span class="delta delta--good" aria-label="베이스라인 대비 26.5%p 상승">▲26.5%p</span>
+        <span>베이스라인 72.0% 대비</span>
+      </div>
+    </article>
+
+    <article class="card kpi">
+      <span class="label">누적 소비 전력</span>
+      <div class="kpi__value-row">
+        <span class="kpi__value">42.1<span class="kpi__unit">mWh</span></span>
+        <svg class="spark" width="92" height="30" viewBox="0 0 92 30" fill="none" role="img" aria-label="누적 소비 전력 추이 0에서 42.1 mWh">
+          <polyline points="0.0,26.0 15.3,22.3 30.7,18.7 46.0,15.0 61.3,11.4 76.7,7.7 92.0,4.0" class="s-gb" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+          <circle cx="92" cy="4.0" r="3" class="f-gb" stroke="#fcfcfb" stroke-width="2"/>
+        </svg>
+      </div>
+      <div class="kpi__foot">
+        <span class="delta delta--good" aria-label="베이스라인 대비 66.2% 감소(개선)">▼66.2%</span>
+        <span>베이스라인 124.5 mWh 대비</span>
+      </div>
+    </article>
+
+    <article class="card kpi">
+      <span class="label">배터리</span>
+      <div class="kpi__value-row">
+        <span class="kpi__value">85<span class="kpi__unit">%</span></span>
+        <svg class="spark" width="92" height="30" viewBox="0 0 92 30" fill="none" role="img" aria-label="배터리 잔량 85%">
+          <rect x="0" y="9" width="92" height="12" rx="3" class="f-grid"/>
+          <rect x="0" y="9" width="78.2" height="12" rx="3" class="f-gb"/>
+        </svg>
+      </div>
+      <div class="kpi__foot">
+        <span>EXTERNAL_5V · 가상 배터리 값</span>
+      </div>
+    </article>
+  </div>
+
+  <div class="grid grid--panels">
+
+    <!-- 3. Network Quality: 게이지 3줄, 각자 축·단위, 검은 임계선 -->
+    <section class="card">
+      <header class="card__head">
+        <h2 class="card__title">Network Quality <small>· 네트워크 품질</small></h2>
+        <span class="card__meta">최근 60초 평균</span>
+      </header>
+      <div class="card__body gauges">
+        <div class="gauge">
+          <div class="gauge__head">
+            <span class="gauge__name">지연 시간 <small>Latency</small></span>
+            <span class="gauge__value">45<small>ms</small></span>
+          </div>
+          <svg width="100%" height="50" role="img" aria-label="지연 시간 45 ms, 축 0–150 ms, 임계 100 ms">
+            <text x="66.67%" y="11" text-anchor="middle" class="th-text">임계 100 ms</text>
+            <rect x="0" y="18" width="100%" height="11" rx="5.5" class="f-track"/>
+            <rect x="0" y="18" width="30%" height="11" rx="5.5" class="f-gb"/>
+            <line x1="66.67%" y1="14" x2="66.67%" y2="33" class="s-threshold" stroke-width="2"/>
+            <text x="0" y="47" class="axis-text">0</text>
+            <text x="100%" y="47" text-anchor="end" class="axis-text">150 ms</text>
+          </svg>
+        </div>
+
+        <div class="gauge">
+          <div class="gauge__head">
+            <span class="gauge__name">패킷 손실 <small>Packet Loss</small></span>
+            <span class="gauge__value">1.5<small>%</small></span>
+          </div>
+          <svg width="100%" height="50" role="img" aria-label="패킷 손실 1.5%, 축 0–10%, 허용 한계 5%">
+            <text x="50%" y="11" text-anchor="middle" class="th-text">허용 한계 5 %</text>
+            <rect x="0" y="18" width="100%" height="11" rx="5.5" class="f-track"/>
+            <rect x="0" y="18" width="15%" height="11" rx="5.5" class="f-gb"/>
+            <line x1="50%" y1="14" x2="50%" y2="33" class="s-threshold" stroke-width="2"/>
+            <text x="0" y="47" class="axis-text">0</text>
+            <text x="100%" y="47" text-anchor="end" class="axis-text">10 %</text>
+          </svg>
+        </div>
+
+        <div class="gauge">
+          <div class="gauge__head">
+            <span class="gauge__name">재전송 <small>Retry</small></span>
+            <span class="gauge__value">3<small>회 / 100 패킷</small></span>
+          </div>
+          <svg width="100%" height="50" role="img" aria-label="재전송 100 패킷당 3회, 축 0–20회, 임계 10회">
+            <text x="50%" y="11" text-anchor="middle" class="th-text">임계 10회</text>
+            <rect x="0" y="18" width="100%" height="11" rx="5.5" class="f-track"/>
+            <rect x="0" y="18" width="15%" height="11" rx="5.5" class="f-gb"/>
+            <line x1="50%" y1="14" x2="50%" y2="33" class="s-threshold" stroke-width="2"/>
+            <text x="0" y="47" class="axis-text">0</text>
+            <text x="100%" y="47" text-anchor="end" class="axis-text">20 회</text>
+          </svg>
+        </div>
+      </div>
+      <footer class="card__foot">
+        <span class="pill">
+          <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><line x1="6" y1="1" x2="6" y2="13" class="s-threshold" stroke-width="2"/></svg>
+          검은 세로선 = 임계값
+        </span>
+      </footer>
+    </section>
+
+    <!-- 4. 비교 차트: 같은 0 기준선에서 시작하는 막대 2개 -->
+    <section class="card">
+      <header class="card__head">
+        <h2 class="card__title">베이스라인 비교 <small>· Gingerbread vs Legacy MQTT</small></h2>
+        <span class="card__meta">손실 20% 주입</span>
+      </header>
+      <div class="card__body">
+        <div class="cmp-group">
+          <div class="cmp__head">
+            <span class="cmp__title">전송 성공률</span>
+            <span class="card__meta">n = 1,200</span>
+          </div>
+          <div class="cmp__plot">
+            <svg height="124" role="img" aria-label="전송 성공률 Gingerbread 98.5%, Legacy MQTT 72.0%, 0–100% 축">
+              <rect x="1" y="2" width="9" height="9" rx="2" class="f-gb"/>
+              <text x="17" y="11" class="row-text">Gingerbread</text>
+              <rect x="0" y="18" width="100%" height="28" rx="4" class="f-subtle"/>
+              <rect x="0" y="18" width="98.5%" height="28" rx="4" class="f-gb"/>
+
+              <rect x="1" y="58" width="9" height="9" rx="2" class="f-legacy"/>
+              <text x="17" y="67" class="row-text">Legacy MQTT</text>
+              <rect x="0" y="74" width="100%" height="28" rx="4" class="f-subtle"/>
+              <rect x="0" y="74" width="72%" height="28" rx="4" class="f-legacy"/>
+
+              <line x1="0.75" y1="14" x2="0.75" y2="106" class="s-baseline" stroke-width="1.5"/>
+              <text x="0" y="121" class="axis-text">0</text>
+              <text x="100%" y="121" text-anchor="end" class="axis-text">100 %</text>
+            </svg>
+            <span class="cmp__value" style="top:18px">98.5<small>%</small></span>
+            <span class="cmp__value" style="top:74px">72.0<small>%</small></span>
+          </div>
+        </div>
+
+        <div class="cmp-group">
+          <div class="cmp__head">
+            <span class="cmp__title">누적 소비 전력</span>
+            <span class="card__meta">60분 구간</span>
+          </div>
+          <div class="cmp__plot">
+            <svg height="124" role="img" aria-label="누적 소비 전력 Gingerbread 42.1 mWh, Legacy MQTT 124.5 mWh, 같은 0 기준선">
+              <rect x="1" y="2" width="9" height="9" rx="2" class="f-gb"/>
+              <text x="17" y="11" class="row-text">Gingerbread</text>
+              <rect x="0" y="18" width="100%" height="28" rx="4" class="f-subtle"/>
+              <rect x="0" y="18" width="32.21%" height="28" rx="4" class="f-gb"/>
+
+              <rect x="1" y="58" width="9" height="9" rx="2" class="f-legacy"/>
+              <text x="17" y="67" class="row-text">Legacy MQTT</text>
+              <rect x="0" y="74" width="100%" height="28" rx="4" class="f-subtle"/>
+              <rect x="0" y="74" width="95.24%" height="28" rx="4" class="f-legacy"/>
+
+              <line x1="0.75" y1="14" x2="0.75" y2="106" class="s-baseline" stroke-width="1.5"/>
+              <text x="0" y="121" class="axis-text">0</text>
+            </svg>
+            <span class="cmp__value" style="top:18px">42.1<small>mWh</small></span>
+            <span class="cmp__value" style="top:74px">124.5<small>mWh</small></span>
+          </div>
+        </div>
+      </div>
+      <footer class="card__foot">
+        <span class="pill" style="flex-wrap:wrap">
+          <span class="delta delta--good">▲26.5%p</span> 성공률
+          <span class="delta delta--good">▼66.2%</span> 소비 전력
+          <span>· 동일 조건에서의 차이</span>
+        </span>
+      </footer>
+    </section>
+
+    <!-- 5. QoS 분포: 누적 가로 막대 2줄, 파랑 명도 3단계 -->
+    <section class="card panel--qos">
+      <header class="card__head">
+        <h2 class="card__title">QoS 레벨 분포 <small>· QoS Distribution</small></h2>
+        <span class="legend" aria-label="범례">
+          <span><i class="sw" style="background:var(--qos-0)"></i>QoS 0</span>
+          <span><i class="sw" style="background:var(--qos-1)"></i>QoS 1</span>
+          <span><i class="sw" style="background:var(--qos-2)"></i>QoS 2</span>
+        </span>
+      </header>
+      <div class="card__body">
+        <div class="qos-row">
+          <div class="qos-row__label">
+            <i class="sw" style="background:var(--series-gingerbread)"></i>
+            <strong>Gingerbread</strong>
+          </div>
+          <svg width="100%" height="36" role="img" aria-label="Gingerbread QoS 0 70%, QoS 1 20%, QoS 2 10%">
+            <rect x="0" y="1" width="70%" height="34" rx="4" class="f-q0 seg"><title>QoS 0 · 70%</title></rect>
+            <rect x="70%" y="1" width="20%" height="34" rx="4" class="f-q1 seg"><title>QoS 1 · 20%</title></rect>
+            <rect x="90%" y="1" width="10%" height="34" rx="4" class="f-q2 seg"><title>QoS 2 · 10%</title></rect>
+            <text x="0" dx="12" y="22.5" class="seg-text t-q0">70%</text>
+            <text x="70%" dx="12" y="22.5" class="seg-text t-q1">20%</text>
+            <text x="95%" y="22.5" text-anchor="middle" class="seg-text t-q2">10%</text>
+          </svg>
+        </div>
+
+        <div class="qos-row">
+          <div class="qos-row__label">
+            <i class="sw" style="background:var(--series-legacy)"></i>
+            <strong>Legacy MQTT</strong>
+            <em>QoS 1 고정</em>
+          </div>
+          <svg width="100%" height="36" role="img" aria-label="Legacy MQTT QoS 1 100%">
+            <rect x="0" y="1" width="100%" height="34" rx="4" class="f-q1 seg"><title>QoS 1 · 100%</title></rect>
+            <text x="0" dx="12" y="22.5" class="seg-text t-q1">100%</text>
+          </svg>
+        </div>
+      </div>
+      <footer class="card__foot">
+        전송의 70%를 QoS 0으로 내려 보내면서도 성공률을 유지한 것이 절전의 실제 원인입니다.
+        동일한 20% 손실 주입 환경에서 Gingerbread는 98.5%, Legacy MQTT는 72.0%를 기록했습니다.
+      </footer>
+    </section>
+  </div>
+
+  <footer class="page-foot">
+    <span>결과보고서용 정적 목업 1/2 · 운영 대시보드</span>
+    <span>수치 출처 <span class="mono">dashboard/src/data/mock/fixtures.ts</span></span>
+    <span>성공률 98.5% ↔ 패킷 손실 1.5% (100 − 1.5)</span>
+  </footer>
+</main>
+
+</body>
+</html>
