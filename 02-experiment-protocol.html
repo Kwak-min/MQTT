@@ -1,0 +1,919 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gingerbread · 실험 비교·프로토콜 목업 (2/2)</title>
+<!--
+  결과보고서용 정적 HTML 목업 2/2 — 실험 비교 · 프로토콜
+  - 외부 의존성 없음(CDN·폰트·이미지·JS 라이브러리 없음). 파일을 더블클릭하면 열립니다.
+  - 차트·다이어그램은 모두 인라인 SVG. 스크립트는 핸드셰이크 탭 전환만 담당(fetch·폴링 없음).
+  - 수치 출처: dashboard/src/data/mock/fixtures.ts (시안 기준 고정 데이터, origin/frontend 412d364)
+  - 노드 역할·수신 경로 서술: README.md 「노드 아키텍처」 (수치 없이 서술만 인용)
+  - 디자인 시안: https://claude.ai/code/artifact/ff2594f4-9acc-4e19-9e5d-e71f6bc3c539
+-->
+<style>
+  /* ---- 디자인 토큰 (01-operations-dashboard.html 의 :root 그대로) ---- */
+  :root {
+    color-scheme: light;
+
+    /* 비교 시리즈 — 전 화면 고정 */
+    --series-gingerbread: #2a78d6;
+    --series-legacy: #eb6834;
+
+    /* QoS 순서형 램프 — 파랑 한 색의 명도 3단계 */
+    --qos-0: #86b6ef;
+    --qos-1: #3987e5;
+    --qos-2: #184f95;
+    --qos-0-ink: #0b0b0b;
+    --qos-1-ink: #ffffff;
+    --qos-2-ink: #ffffff;
+
+    /* 상태 — 항상 아이콘 + 라벨과 함께 */
+    --status-normal: #0ca30c;
+    --status-serious-ink: #c2653a;
+    --status-critical-ink: #a8332a;
+    --status-positive-ink: #006300;
+
+    /* 표면 */
+    --surface-page: #efefec;
+    --surface-card: #fcfcfb;
+    --surface-track: #eceae4;
+    --surface-subtle: #f2f1ed;
+    --surface-selected: #eceae4;
+
+    /* 잉크 */
+    --ink-primary: #0b0b0b;
+    --ink-secondary: #52514e;
+    --ink-muted: #898781;
+    --ink-faint: #a9a79f;
+    --ink-inverse: #ffffff;
+
+    /* 선 */
+    --line-grid: #e1e0d9;
+    --line-axis: #c3c2b7;
+    --line-card: rgba(11, 11, 11, 0.1);
+    --line-control: rgba(11, 11, 11, 0.14);
+    --line-threshold: #0b0b0b;
+
+    /* 타이포 (웹폰트 로딩 없음 — 설치된 글꼴로 대체) */
+    --font-sans: 'IBM Plex Sans KR', system-ui, -apple-system, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --text-metric: 600 38px/1 var(--font-sans);
+    --text-title: 600 16px/1.3 var(--font-sans);
+    --text-body: 400 12.5px/1.55 var(--font-sans);
+    --text-body-strong: 500 13px/1.5 var(--font-sans);
+    --text-label: 600 11px/1.2 var(--font-sans);
+    --text-caption: 400 11.5px/1.4 var(--font-sans);
+    --letter-label: 0.08em;
+
+    /* 간격 · 형태 */
+    --radius-card: 10px;
+    --radius-control: 6px;
+    --radius-chip: 4px;
+    --gap-grid: 16px;
+    --page-max: 1440px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-width: 320px;
+    background: var(--surface-page);
+    color: var(--ink-primary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  svg text { font-family: var(--font-sans); }
+
+  /* ---- 전역 헤더 (01과 동일) ---- */
+  .app-header {
+    display: flex; align-items: center; gap: 32px; flex-wrap: wrap;
+    min-height: 60px; padding: 10px 40px;
+    background: var(--surface-card); border-bottom: 1px solid var(--line-card);
+  }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font: 600 15px/1 var(--font-sans); letter-spacing: -0.01em; }
+  .nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  .nav span { font: 500 13.5px/1 var(--font-sans); color: var(--ink-secondary); padding: 8px 14px; border-radius: var(--radius-control); }
+  .nav span[aria-current="page"] { font-weight: 600; color: var(--ink-primary); background: var(--surface-selected); }
+  .nav small { color: var(--ink-faint); font-weight: 400; font-size: inherit; }
+  .header-meta { margin-left: auto; display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; font: var(--text-body); color: var(--ink-muted); }
+  .chip-mock { font: var(--text-caption); color: var(--ink-secondary); border: 1px solid var(--line-control); border-radius: var(--radius-chip); padding: 3px 8px; }
+
+  /* ---- 레이아웃 ---- */
+  .page { max-width: var(--page-max); margin: 0 auto; padding: 24px 40px 48px; display: flex; flex-direction: column; gap: var(--gap-grid); }
+  .grid { display: grid; gap: var(--gap-grid); }
+  .section-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 12px 0 -4px; }
+  .section-head h2 { font: 600 18px/1.3 var(--font-sans); margin: 0; letter-spacing: -0.01em; }
+  .section-head p { margin: 0; font: var(--text-body); color: var(--ink-muted); }
+
+  /* ---- 카드 ---- */
+  .card {
+    background: var(--surface-card); border: 1px solid var(--line-card); border-radius: var(--radius-card);
+    padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; min-width: 0;
+  }
+  .card__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .card__title { font: var(--text-title); margin: 0; }
+  .card__title small { color: var(--ink-muted); font-weight: 400; font-size: inherit; }
+  .card__meta { font: var(--text-caption); color: var(--ink-muted); }
+  .card__foot { border-top: 1px solid var(--line-grid); padding-top: 11px; font: var(--text-body); color: var(--ink-secondary); }
+  .label { font: var(--text-label); letter-spacing: var(--letter-label); color: var(--ink-muted); }
+  .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+  .legend { display: inline-flex; gap: 14px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; font: var(--text-caption); color: var(--ink-secondary); }
+  .qos-chip { display: inline-block; font: 600 11px/1 var(--font-sans); padding: 3px 7px; border-radius: var(--radius-chip); }
+  .qos-chip--0 { background: var(--qos-0); color: var(--qos-0-ink); }
+  .qos-chip--1 { background: var(--qos-1); color: var(--qos-1-ink); }
+  .qos-chip--2 { background: var(--qos-2); color: var(--qos-2-ink); }
+  .delta { display: inline-flex; align-items: center; font: 600 12px/1 var(--font-sans); padding: 4px 7px; border-radius: var(--radius-chip); background: var(--surface-subtle); white-space: nowrap; }
+  .delta--good { color: var(--status-positive-ink); }
+
+  /* ---- a. 노드 비교 ---- */
+  .compare { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .node-card { border-top: 4px solid var(--node-color); }
+  .node-card--gb { --node-color: var(--series-gingerbread); }
+  .node-card--legacy { --node-color: var(--series-legacy); }
+  .node-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .node-head .sw { width: 12px; height: 12px; background: var(--node-color); }
+  .node-head h3 { margin: 0; font: var(--text-title); }
+  .node-head .role { font: var(--text-caption); color: var(--ink-secondary); border: 1px solid var(--line-control); border-radius: var(--radius-chip); padding: 3px 8px; }
+  .spec { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 0; margin: 0; }
+  .spec dt, .spec dd { margin: 0; padding: 8px 0; border-top: 1px solid var(--line-grid); font: var(--text-body); }
+  .spec dt { color: var(--ink-muted); }
+  .spec dd { color: var(--ink-primary); }
+  .spec dd .mono { font-size: 12px; }
+  .path { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .path b { font-weight: 500; background: var(--surface-subtle); border-radius: var(--radius-chip); padding: 2px 7px; }
+  .path i { font-style: normal; color: var(--ink-faint); }
+  .qos-bar { display: block; width: 100%; height: 22px; margin-top: 2px; }
+  .seg { stroke: var(--surface-card); stroke-width: 2; }
+  .seg-text { font: 600 11.5px/1 var(--font-sans); }
+  .mini-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .mini { background: var(--surface-subtle); border-radius: var(--radius-control); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .mini__v { font: 600 22px/1 var(--font-sans); letter-spacing: -0.01em; white-space: nowrap; }
+  .mini__v small { font: 500 12px/1 var(--font-sans); color: var(--ink-secondary); margin-left: 2px; letter-spacing: 0; }
+  .mini__n { font: var(--text-caption); color: var(--ink-muted); }
+
+  .metric-rows { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 28px; }
+  .mrow { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .mrow__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .mrow__title { font: var(--text-body-strong); }
+  .mrow svg { display: block; width: 100%; overflow: visible; }
+  .bar-val { font: 600 12.5px/1 var(--font-sans); fill: var(--ink-primary); }
+  .bar-unit { font: 400 11px/1 var(--font-sans); fill: var(--ink-secondary); }
+  .mrow__foot { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font: var(--text-caption); color: var(--ink-muted); }
+
+  /* ---- b. 핸드셰이크 ---- */
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line-grid); padding-bottom: 10px; }
+  .tab {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    font: 500 13px/1 var(--font-sans); color: var(--ink-secondary);
+    padding: 9px 14px; border-radius: var(--radius-control);
+  }
+  .tab:hover { background: var(--surface-subtle); }
+  .tab[aria-selected="true"] { background: var(--surface-selected); color: var(--ink-primary); font-weight: 600; border-color: var(--line-control); }
+  .tab:focus-visible { outline: 2px solid var(--series-gingerbread); outline-offset: 2px; }
+  .tab small { color: var(--ink-muted); font-weight: 400; font-size: 11.5px; margin-left: 4px; }
+  .panel[hidden] { display: none; }
+  .panel { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+  .seq { display: block; width: 100%; height: auto; }
+  .panel-side { display: flex; flex-direction: column; gap: 12px; }
+  .side-title { font: var(--text-body-strong); margin: 0; }
+  .ev { width: 100%; border-collapse: collapse; font: var(--text-body); }
+  .ev th { text-align: left; font: var(--text-label); letter-spacing: var(--letter-label); color: var(--ink-muted); padding: 0 0 6px; }
+  .ev td { padding: 7px 0; border-top: 1px solid var(--line-grid); vertical-align: top; }
+  .ev td:first-child { width: 64px; }
+  .dir { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .dir::before { content: ''; width: 14px; height: 0; border-top: 2px solid currentColor; }
+  .dir--up { color: var(--series-gingerbread); }
+  .dir--down { color: var(--ink-secondary); }
+  .dir--down::before { border-top-style: dashed; }
+  .dir--lost { color: var(--status-critical-ink); }
+  .note { font: var(--text-caption); color: var(--ink-secondary); background: var(--surface-subtle); border-radius: var(--radius-control); padding: 10px 12px; margin: 0; }
+  .note strong { font-weight: 600; color: var(--ink-primary); }
+
+  /* SVG 클래스 (토큰만 사용) */
+  .f-gb { fill: var(--series-gingerbread); }
+  .f-legacy { fill: var(--series-legacy); }
+  .f-subtle { fill: var(--surface-subtle); }
+  .f-card { fill: var(--surface-card); }
+  .f-q0 { fill: var(--qos-0); } .f-q1 { fill: var(--qos-1); } .f-q2 { fill: var(--qos-2); }
+  .t-q0 { fill: var(--qos-0-ink); } .t-q1 { fill: var(--qos-1-ink); } .t-q2 { fill: var(--qos-2-ink); }
+  .f-up { fill: var(--series-gingerbread); }
+  .f-down { fill: var(--ink-secondary); }
+  .s-up { stroke: var(--series-gingerbread); }
+  .s-down { stroke: var(--ink-secondary); }
+  .s-lost { stroke: var(--status-critical-ink); }
+  .s-life { stroke: var(--line-axis); }
+  .s-axis { stroke: var(--ink-muted); }
+  .s-grid { stroke: var(--line-grid); }
+  .s-th { stroke: var(--line-threshold); }
+  .s-baseline { stroke: var(--ink-primary); }
+  .actor { fill: var(--surface-subtle); stroke: var(--line-control); }
+  .actor-text { font: 600 13px/1 var(--font-sans); fill: var(--ink-primary); }
+  .actor-sub { font: 400 11px/1 var(--font-sans); fill: var(--ink-muted); }
+  .msg-up { font: 600 13px/1 var(--font-sans); fill: var(--series-gingerbread); }
+  .msg-down { font: 600 13px/1 var(--font-sans); fill: var(--ink-secondary); }
+  .msg-lost { font: 600 13px/1 var(--font-sans); fill: var(--status-critical-ink); }
+  .msg-sub { font: 400 11px/1 var(--font-sans); fill: var(--ink-muted); }
+  .tick { font: 400 11px/1 var(--font-mono); fill: var(--ink-muted); }
+  .tick-strong { font: 600 11px/1 var(--font-mono); fill: var(--ink-primary); }
+  .axis-title { font: 600 10.5px/1 var(--font-sans); fill: var(--ink-muted); letter-spacing: 0.08em; }
+  .rtt { font: 600 14px/1 var(--font-sans); fill: var(--ink-primary); }
+  .rtt-sub { font: 400 11px/1 var(--font-sans); fill: var(--ink-secondary); }
+  .th-text { font: 400 11px/1 var(--font-sans); fill: var(--ink-primary); }
+  .lost-text { font: 600 11px/1 var(--font-sans); fill: var(--status-critical-ink); }
+
+  /* ---- c. 토큰 시트 ---- */
+  .tok-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .tok-group h3 { margin: 0; font: var(--text-body-strong); }
+  .tok-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .tok { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; align-items: center; }
+  .tok__sw { width: 34px; height: 34px; border-radius: var(--radius-control); border: 1px solid var(--line-card); display: grid; place-items: center; font: 600 12px/1 var(--font-sans); }
+  .tok__name { font: 500 12px/1.3 var(--font-mono); color: var(--ink-primary); overflow-wrap: anywhere; }
+  .tok__meta { font: var(--text-caption); color: var(--ink-muted); }
+  .type-list { display: flex; flex-direction: column; }
+  .type-row { display: grid; grid-template-columns: 200px minmax(0, 1fr) 220px; gap: 16px; align-items: baseline; padding: 12px 0; border-top: 1px solid var(--line-grid); }
+  .type-row:first-child { border-top: 0; }
+  .type-row .tok__name { font-size: 12px; }
+  .type-row .spec-txt { font: var(--text-caption); color: var(--ink-muted); font-family: var(--font-mono); }
+  .shape-row { display: flex; gap: 18px; flex-wrap: wrap; }
+  .shape { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+  .shape__box { width: 64px; height: 40px; background: var(--surface-subtle); border: 1px solid var(--line-control); }
+
+  .page-foot { font: var(--text-caption); color: var(--ink-muted); display: flex; gap: 6px 16px; flex-wrap: wrap; border-top: 1px solid var(--line-grid); padding-top: 14px; margin-top: 8px; }
+
+  /* ---- 반응형: 1440 기준, 1200·1024·720 이하 ---- */
+  @media (max-width: 1200px) {
+    .page { padding: 20px 24px 40px; }
+    .app-header { padding: 10px 24px; gap: 20px; }
+    .metric-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tok-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .panel { grid-template-columns: minmax(0, 1fr) 240px; }
+  }
+  @media (max-width: 1024px) {
+    .compare { grid-template-columns: minmax(0, 1fr); }
+    .panel { grid-template-columns: minmax(0, 1fr); }
+    .type-row { grid-template-columns: 160px minmax(0, 1fr); }
+    .type-row .spec-txt { grid-column: 2; }
+  }
+  @media (max-width: 720px) {
+    .page { padding: 16px 14px 32px; }
+    .app-header { padding: 10px 14px; }
+    .header-meta { margin-left: 0; }
+    .mini-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric-rows, .tok-grid { grid-template-columns: minmax(0, 1fr); }
+    .type-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .type-row .spec-txt { grid-column: auto; }
+    .spec { grid-template-columns: 80px minmax(0, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <span class="brand">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="15" height="15" rx="3.5" stroke="#0b0b0b" stroke-width="1.6"/>
+      <path d="M6.5 12.5 9 9l2.2 2.2L13.5 7" stroke="#2a78d6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    Gingerbread
+  </span>
+  <nav class="nav" aria-label="화면">
+    <span>운영 <small>Operations</small></span>
+    <span aria-current="page">실험 <small>Experiment</small></span>
+    <span aria-current="page">프로토콜 <small>Protocol</small></span>
+  </nav>
+  <span class="header-meta">
+    <span class="chip-mock">MOCK DATA · 정적 목업</span>
+    <span>기준 시각 <span class="mono">2026-09-02 17:50:05</span></span>
+  </span>
+</header>
+
+<main class="page">
+  <h1 class="sr-only">실험 비교 · 프로토콜</h1>
+
+  <!-- ================= a. 노드 비교 ================= -->
+  <div class="section-head">
+    <h2>실험 비교</h2>
+    <p>Gingerbread vs Legacy MQTT · 동일 조건(손실 20% 주입, 60분 구간, n = 1,200)</p>
+  </div>
+
+  <div class="grid compare">
+    <!-- Gingerbread -->
+    <section class="card node-card node-card--gb" aria-labelledby="n-gb">
+      <div class="node-head">
+        <i class="sw" aria-hidden="true"></i>
+        <h3 id="n-gb">Gingerbread <small style="color:var(--ink-muted);font-weight:400">· 제안 시스템</small></h3>
+        <span class="role">Node 1 · 적응형 QoS</span>
+      </div>
+      <dl class="spec">
+        <dt>하드웨어</dt><dd>ESP32-S3 · <span class="mono">192.168.0.42</span></dd>
+        <dt>역할</dt><dd>TinyML(MLP) 위험 점수로 QoS 0·1·2 동적 선택 + Deep Sleep 절전</dd>
+        <dt>수신 경로</dt>
+        <dd>
+          <span class="path"><b>Node 1</b><i>→</i><b>커스텀 MQTT-SN</b><i>→</i><b>Gateway <span class="mono">UDP :5000</span></b></span>
+          <span class="card__meta">QoS 2는 TCP 4단계 핸드셰이크로 전환</span>
+        </dd>
+        <dt>세션</dt><dd><span class="mono">nodeB_001</span> · 현재 QoS <span class="qos-chip qos-chip--2">2</span></dd>
+        <dt>QoS 분포</dt>
+        <dd>
+          <svg class="qos-bar" role="img" aria-label="Gingerbread QoS 0 70%, QoS 1 20%, QoS 2 10%">
+            <rect x="0" y="0" width="70%" height="22" rx="4" class="f-q0 seg"/>
+            <rect x="70%" y="0" width="20%" height="22" rx="4" class="f-q1 seg"/>
+            <rect x="90%" y="0" width="10%" height="22" rx="4" class="f-q2 seg"/>
+            <text x="0" dx="9" y="15" class="seg-text t-q0">QoS 0 · 70%</text>
+            <text x="70%" dx="9" y="15" class="seg-text t-q1">20%</text>
+            <text x="95%" y="15" text-anchor="middle" class="seg-text t-q2">10%</text>
+          </svg>
+        </dd>
+      </dl>
+      <div class="mini-metrics">
+        <div class="mini"><span class="mini__n">전송 성공률</span><span class="mini__v">98.5<small>%</small></span></div>
+        <div class="mini"><span class="mini__n">패킷 손실</span><span class="mini__v">1.5<small>%</small></span></div>
+        <div class="mini"><span class="mini__n">누적 소비 전력</span><span class="mini__v">42.1<small>mWh</small></span></div>
+        <div class="mini"><span class="mini__n">평균 지연</span><span class="mini__v">45.0<small>ms</small></span></div>
+      </div>
+      <div class="card__foot">
+        현재 입력 · RSSI <b class="mono">−84 dBm</b> (임계 −80 dBm) · 가스 저항 <b class="mono">18.5 kΩ</b> (임계 20.0 kΩ) · 위험 점수 <b class="mono">0.512</b>
+      </div>
+    </section>
+
+    <!-- Legacy -->
+    <section class="card node-card node-card--legacy" aria-labelledby="n-legacy">
+      <div class="node-head">
+        <i class="sw" aria-hidden="true"></i>
+        <h3 id="n-legacy">Legacy MQTT <small style="color:var(--ink-muted);font-weight:400">· 베이스라인</small></h3>
+        <span class="role">Node 2 · 고정 QoS</span>
+      </div>
+      <dl class="spec">
+        <dt>하드웨어</dt><dd>ESP32-S3 · <span class="mono">—</span></dd>
+        <dt>역할</dt><dd>QoS 1 고정 (PUBLISH/PUBACK) · 온도·습도에 반응하지 않는 비교 기준</dd>
+        <dt>수신 경로</dt>
+        <dd>
+          <span class="path"><b>Node 2</b><i>→</i><b>표준 MQTT over TCP</b><i>→</i><b>Mosquitto 브로커</b></span>
+          <span class="card__meta">모든 메시지가 같은 경로·같은 핸드셰이크</span>
+        </dd>
+        <dt>세션</dt><dd><span class="mono">—</span> · 고정 QoS <span class="qos-chip qos-chip--1">1</span></dd>
+        <dt>QoS 분포</dt>
+        <dd>
+          <svg class="qos-bar" role="img" aria-label="Legacy MQTT QoS 1 100%">
+            <rect x="0" y="0" width="100%" height="22" rx="4" class="f-q1 seg"/>
+            <text x="0" dx="9" y="15" class="seg-text t-q1">QoS 1 · 100%</text>
+          </svg>
+        </dd>
+      </dl>
+      <div class="mini-metrics">
+        <div class="mini"><span class="mini__n">전송 성공률</span><span class="mini__v">72.0<small>%</small></span></div>
+        <div class="mini"><span class="mini__n">패킷 손실</span><span class="mini__v">28.0<small>%</small></span></div>
+        <div class="mini"><span class="mini__n">누적 소비 전력</span><span class="mini__v">124.5<small>mWh</small></span></div>
+        <div class="mini"><span class="mini__n">평균 지연</span><span class="mini__v">68.2<small>ms</small></span></div>
+      </div>
+      <div class="card__foot">
+        성공률 72.0% ↔ 손실 28.0% (100 − 28.0) · IP·세션 값은 고정 데이터에 없어 “—”로 표기
+      </div>
+    </section>
+  </div>
+
+  <!-- 주요 지표 나란히: 같은 0 기준선 -->
+  <section class="card" aria-labelledby="m-title">
+    <header class="card__head">
+      <h2 class="card__title" id="m-title">주요 지표 <small>· 같은 0 기준선 비교</small></h2>
+      <span class="legend" aria-label="범례">
+        <span><i class="sw" style="background:var(--series-gingerbread)"></i>Gingerbread</span>
+        <span><i class="sw" style="background:var(--series-legacy)"></i>Legacy MQTT</span>
+      </span>
+    </header>
+    <div class="metric-rows">
+      <div class="mrow">
+        <div class="mrow__head"><span class="mrow__title">전송 성공률</span><span class="card__meta">n = 1,200 · 축 0–100 %</span></div>
+        <svg height="66" role="img" aria-label="전송 성공률 Gingerbread 98.5%, Legacy MQTT 72.0%">
+          <rect x="0" y="4" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="4" width="76.83%" height="22" rx="4" class="f-gb"/>
+          <rect x="0" y="34" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="34" width="56.16%" height="22" rx="4" class="f-legacy"/>
+          <line x1="0.75" y1="0" x2="0.75" y2="60" class="s-baseline" stroke-width="1.5"/>
+          <text x="100%" y="20" text-anchor="end" class="bar-val">98.5<tspan class="bar-unit"> %</tspan></text>
+          <text x="100%" y="50" text-anchor="end" class="bar-val">72.0<tspan class="bar-unit"> %</tspan></text>
+        </svg>
+        <div class="mrow__foot"><span class="delta delta--good">▲26.5%p</span>높을수록 좋음</div>
+      </div>
+      <div class="mrow">
+        <div class="mrow__head"><span class="mrow__title">패킷 손실</span><span class="card__meta">손실 20% 주입 · 축 0–100 %</span></div>
+        <svg height="66" role="img" aria-label="패킷 손실 Gingerbread 1.5%, Legacy MQTT 28.0%">
+          <rect x="0" y="4" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="4" width="1.17%" height="22" rx="1" class="f-gb"/>
+          <rect x="0" y="34" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="34" width="21.84%" height="22" rx="4" class="f-legacy"/>
+          <line x1="0.75" y1="0" x2="0.75" y2="60" class="s-baseline" stroke-width="1.5"/>
+          <text x="100%" y="20" text-anchor="end" class="bar-val">1.5<tspan class="bar-unit"> %</tspan></text>
+          <text x="100%" y="50" text-anchor="end" class="bar-val">28.0<tspan class="bar-unit"> %</tspan></text>
+        </svg>
+        <div class="mrow__foot"><span class="delta delta--good">▼26.5%p</span>낮을수록 좋음 · 성공률과 합 100%</div>
+      </div>
+      <div class="mrow">
+        <div class="mrow__head"><span class="mrow__title">누적 소비 전력</span><span class="card__meta">60분 구간</span></div>
+        <svg height="66" role="img" aria-label="누적 소비 전력 Gingerbread 42.1 mWh, Legacy MQTT 124.5 mWh">
+          <rect x="0" y="4" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="4" width="26.38%" height="22" rx="4" class="f-gb"/>
+          <rect x="0" y="34" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="34" width="78%" height="22" rx="4" class="f-legacy"/>
+          <line x1="0.75" y1="0" x2="0.75" y2="60" class="s-baseline" stroke-width="1.5"/>
+          <text x="100%" y="20" text-anchor="end" class="bar-val">42.1<tspan class="bar-unit"> mWh</tspan></text>
+          <text x="100%" y="50" text-anchor="end" class="bar-val">124.5<tspan class="bar-unit"> mWh</tspan></text>
+        </svg>
+        <div class="mrow__foot"><span class="delta delta--good">▼66.2%</span>낮을수록 좋음</div>
+      </div>
+      <div class="mrow">
+        <div class="mrow__head"><span class="mrow__title">평균 지연</span><span class="card__meta">PUBLISH→최종 ACK</span></div>
+        <svg height="66" role="img" aria-label="평균 지연 Gingerbread 45.0 ms, Legacy MQTT 68.2 ms">
+          <rect x="0" y="4" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="4" width="51.47%" height="22" rx="4" class="f-gb"/>
+          <rect x="0" y="34" width="78%" height="22" rx="4" class="f-subtle"/>
+          <rect x="0" y="34" width="78%" height="22" rx="4" class="f-legacy"/>
+          <line x1="0.75" y1="0" x2="0.75" y2="60" class="s-baseline" stroke-width="1.5"/>
+          <text x="100%" y="20" text-anchor="end" class="bar-val">45.0<tspan class="bar-unit"> ms</tspan></text>
+          <text x="100%" y="50" text-anchor="end" class="bar-val">68.2<tspan class="bar-unit"> ms</tspan></text>
+        </svg>
+        <div class="mrow__foot"><span class="delta delta--good">▼34.0%</span>낮을수록 좋음</div>
+      </div>
+    </div>
+    <footer class="card__foot">
+      전송의 70%를 QoS 0으로 내려 보내면서도 성공률을 유지한 것이 절전의 실제 원인입니다.
+      동일한 20% 손실 주입 환경에서 Gingerbread는 98.5%, Legacy MQTT는 72.0%를 기록했습니다.
+    </footer>
+  </section>
+
+  <!-- ================= b. 핸드셰이크 시퀀스 ================= -->
+  <div class="section-head">
+    <h2>프로토콜 · 핸드셰이크 시퀀스</h2>
+    <p>Gingerbread Node 1 ↔ 게이트웨이 · 왼쪽 시간축은 실제 시간에 비례</p>
+  </div>
+
+  <section class="card" aria-labelledby="hs-title">
+    <header class="card__head">
+      <h2 class="card__title" id="hs-title">메시지 흐름 <small>· Handshake</small></h2>
+      <span class="legend" aria-label="범례">
+        <span><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" class="s-up" stroke-width="2"/></svg>상행 · 노드 → 게이트웨이</span>
+        <span><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" class="s-down" stroke-width="2" stroke-dasharray="5 3"/></svg>하행 · 게이트웨이 → 노드</span>
+        <span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" class="s-lost" stroke-width="2" stroke-linecap="round"/></svg>유실</span>
+        <span><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" class="s-th" stroke-width="1.5" stroke-dasharray="2 3"/></svg>타임아웃</span>
+      </span>
+    </header>
+
+    <div class="tabs" role="tablist" aria-label="시퀀스 시나리오">
+      <button class="tab" role="tab" id="tab-normal" aria-controls="p-normal" aria-selected="true">정상<small>QoS 2 · 0x1A4B</small></button>
+      <button class="tab" role="tab" id="tab-retry" aria-controls="p-retry" aria-selected="false" tabindex="-1">재전송<small>QoS 1 · 0x1A4A</small></button>
+      <button class="tab" role="tab" id="tab-lost" aria-controls="p-lost" aria-selected="false" tabindex="-1">패킷 유실<small>QoS 1 · 0x1A48</small></button>
+      <button class="tab" role="tab" id="tab-switch" aria-controls="p-switch" aria-selected="false" tabindex="-1">QoS 0·1·2 전환<small>비교</small></button>
+    </div>
+
+    <!-- 공용 화살촉 -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <marker id="ah-up" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-up"/></marker>
+        <marker id="ah-down" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-down"/></marker>
+      </defs>
+    </svg>
+
+    <!-- 탭 1: 정상 (QoS 2, 4단계) — y = 80 + t × 400/18.4 -->
+    <div class="panel" role="tabpanel" id="p-normal" aria-labelledby="tab-normal">
+      <svg class="seq" viewBox="0 0 960 520" role="img" aria-label="QoS 2 정상 핸드셰이크: PUBLISH 0.0 ms, PUBREC 5.8 ms, PUBREL 11.2 ms, PUBCOMP 18.4 ms, RTT 18.4 ms">
+        <!-- 시간축 0.0 → 18.4 ms -->
+        <text x="64" y="58" text-anchor="end" class="axis-title">t (ms)</text>
+        <line x1="72" y1="80" x2="72" y2="480" class="s-axis" stroke-width="1"/>
+        <g class="s-grid" stroke-width="1">
+          <line x1="72" y1="123.5" x2="900" y2="123.5"/><line x1="72" y1="167" x2="900" y2="167"/>
+          <line x1="72" y1="210.4" x2="900" y2="210.4"/><line x1="72" y1="253.9" x2="900" y2="253.9"/>
+          <line x1="72" y1="297.4" x2="900" y2="297.4"/><line x1="72" y1="340.9" x2="900" y2="340.9"/>
+          <line x1="72" y1="384.3" x2="900" y2="384.3"/><line x1="72" y1="427.8" x2="900" y2="427.8"/>
+          <line x1="72" y1="471.3" x2="900" y2="471.3"/>
+        </g>
+        <g class="s-axis" stroke-width="1">
+          <line x1="66" y1="80" x2="72" y2="80"/><line x1="66" y1="123.5" x2="72" y2="123.5"/><line x1="66" y1="167" x2="72" y2="167"/>
+          <line x1="66" y1="210.4" x2="72" y2="210.4"/><line x1="66" y1="253.9" x2="72" y2="253.9"/><line x1="66" y1="297.4" x2="72" y2="297.4"/>
+          <line x1="66" y1="340.9" x2="72" y2="340.9"/><line x1="66" y1="384.3" x2="72" y2="384.3"/><line x1="66" y1="427.8" x2="72" y2="427.8"/>
+          <line x1="66" y1="471.3" x2="72" y2="471.3"/><line x1="62" y1="480" x2="72" y2="480"/>
+        </g>
+        <text x="60" y="84" text-anchor="end" class="tick-strong">0.0</text>
+        <text x="60" y="127.5" text-anchor="end" class="tick">2</text>
+        <text x="60" y="171" text-anchor="end" class="tick">4</text>
+        <text x="60" y="214.4" text-anchor="end" class="tick">6</text>
+        <text x="60" y="257.9" text-anchor="end" class="tick">8</text>
+        <text x="60" y="301.4" text-anchor="end" class="tick">10</text>
+        <text x="60" y="344.9" text-anchor="end" class="tick">12</text>
+        <text x="60" y="388.3" text-anchor="end" class="tick">14</text>
+        <text x="60" y="431.8" text-anchor="end" class="tick">16</text>
+        <text x="56" y="492" text-anchor="end" class="tick-strong">18.4</text>
+
+        <!-- 액터 -->
+        <rect x="170" y="14" width="160" height="44" rx="6" class="actor"/>
+        <text x="250" y="34" text-anchor="middle" class="actor-text">Node 1</text>
+        <text x="250" y="49" text-anchor="middle" class="actor-sub">ESP32-S3 · 192.168.0.42</text>
+        <rect x="610" y="14" width="160" height="44" rx="6" class="actor"/>
+        <text x="690" y="34" text-anchor="middle" class="actor-text">Gateway</text>
+        <text x="690" y="49" text-anchor="middle" class="actor-sub">Raspberry Pi · TCP</text>
+        <line x1="250" y1="58" x2="250" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <line x1="690" y1="58" x2="690" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+        <!-- 메시지 (라벨은 화살표 위, 선은 끊지 않음) -->
+        <text x="470" y="72" text-anchor="middle" class="msg-up">PUBLISH <tspan class="msg-sub">QoS 2 · 0x1A4B</tspan></text>
+        <line x1="250" y1="80" x2="690" y2="80" class="s-up" stroke-width="2" marker-end="url(#ah-up)"/>
+        <circle cx="250" cy="80" r="3.5" class="f-up"/>
+
+        <text x="470" y="198.1" text-anchor="middle" class="msg-down">PUBREC <tspan class="msg-sub">t 5.8 ms</tspan></text>
+        <line x1="690" y1="206.1" x2="250" y2="206.1" class="s-down" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-down)"/>
+        <circle cx="690" cy="206.1" r="3.5" class="f-down"/>
+
+        <text x="470" y="315.5" text-anchor="middle" class="msg-up">PUBREL <tspan class="msg-sub">t 11.2 ms</tspan></text>
+        <line x1="250" y1="323.5" x2="690" y2="323.5" class="s-up" stroke-width="2" marker-end="url(#ah-up)"/>
+        <circle cx="250" cy="323.5" r="3.5" class="f-up"/>
+
+        <text x="470" y="472" text-anchor="middle" class="msg-down">PUBCOMP <tspan class="msg-sub">t 18.4 ms</tspan></text>
+        <line x1="690" y1="480" x2="250" y2="480" class="s-down" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-down)"/>
+        <circle cx="690" cy="480" r="3.5" class="f-down"/>
+
+        <!-- RTT 브래킷 -->
+        <path d="M770 80H784V480H770" fill="none" class="s-baseline" stroke-width="1.5"/>
+        <text x="796" y="276" class="rtt">RTT 18.4 ms</text>
+        <text x="796" y="294" class="rtt-sub">PUBLISH → PUBCOMP</text>
+      </svg>
+      <aside class="panel-side">
+        <p class="side-title">이벤트 · <span class="mono">0x1A4B</span> <span class="qos-chip qos-chip--2">QoS 2</span></p>
+        <table class="ev">
+          <thead><tr><th>t (ms)</th><th>메시지</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">0.0</td><td><span class="dir dir--up">PUBLISH</span></td></tr>
+            <tr><td class="mono">5.8</td><td><span class="dir dir--down">PUBREC</span></td></tr>
+            <tr><td class="mono">11.2</td><td><span class="dir dir--up">PUBREL</span></td></tr>
+            <tr><td class="mono">18.4</td><td><span class="dir dir--down">PUBCOMP</span></td></tr>
+          </tbody>
+        </table>
+        <p class="note"><strong>정확히 한 번 전달.</strong> 17:50:05 긴급 데이터(가스 18.5 kΩ, 임계 20.0 kΩ) · 네트워크 불안정 · retry 0 · 136 bytes.</p>
+      </aside>
+    </div>
+
+    <!-- 탭 2: 재전송 (QoS 1, retry 1) — y = 80 + t × 400/31.7 -->
+    <div class="panel" role="tabpanel" id="p-retry" aria-labelledby="tab-retry" hidden>
+      <svg class="seq" viewBox="0 0 960 520" role="img" aria-label="QoS 1 재전송: PUBLISH 0.0 ms 유실, 타임아웃 후 22.1 ms 재전송, PUBACK 31.7 ms, RTT 31.7 ms">
+        <text x="64" y="58" text-anchor="end" class="axis-title">t (ms)</text>
+        <line x1="72" y1="80" x2="72" y2="480" class="s-axis" stroke-width="1"/>
+        <g class="s-grid" stroke-width="1">
+          <line x1="72" y1="143.1" x2="900" y2="143.1"/><line x1="72" y1="206.2" x2="900" y2="206.2"/>
+          <line x1="72" y1="269.3" x2="900" y2="269.3"/><line x1="72" y1="332.4" x2="900" y2="332.4"/>
+          <line x1="72" y1="395.5" x2="900" y2="395.5"/><line x1="72" y1="458.5" x2="900" y2="458.5"/>
+        </g>
+        <g class="s-axis" stroke-width="1">
+          <line x1="66" y1="80" x2="72" y2="80"/><line x1="66" y1="143.1" x2="72" y2="143.1"/><line x1="66" y1="206.2" x2="72" y2="206.2"/>
+          <line x1="66" y1="269.3" x2="72" y2="269.3"/><line x1="66" y1="332.4" x2="72" y2="332.4"/><line x1="66" y1="395.5" x2="72" y2="395.5"/>
+          <line x1="66" y1="458.5" x2="72" y2="458.5"/><line x1="62" y1="480" x2="72" y2="480"/>
+        </g>
+        <text x="60" y="84" text-anchor="end" class="tick-strong">0.0</text>
+        <text x="60" y="147.1" text-anchor="end" class="tick">5</text>
+        <text x="60" y="210.2" text-anchor="end" class="tick">10</text>
+        <text x="60" y="273.3" text-anchor="end" class="tick">15</text>
+        <text x="60" y="336.4" text-anchor="end" class="tick">20</text>
+        <text x="60" y="399.5" text-anchor="end" class="tick">25</text>
+        <text x="60" y="462.5" text-anchor="end" class="tick">30</text>
+        <text x="56" y="492" text-anchor="end" class="tick-strong">31.7</text>
+
+        <rect x="170" y="14" width="160" height="44" rx="6" class="actor"/>
+        <text x="250" y="34" text-anchor="middle" class="actor-text">Node 1</text>
+        <text x="250" y="49" text-anchor="middle" class="actor-sub">ESP32-S3 · 192.168.0.42</text>
+        <rect x="610" y="14" width="160" height="44" rx="6" class="actor"/>
+        <text x="690" y="34" text-anchor="middle" class="actor-text">Gateway</text>
+        <text x="690" y="49" text-anchor="middle" class="actor-sub">Raspberry Pi · UDP :5000</text>
+        <line x1="250" y1="58" x2="250" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <line x1="690" y1="58" x2="690" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+        <!-- 원본 PUBLISH 유실 -->
+        <text x="400" y="72" text-anchor="middle" class="msg-up">PUBLISH <tspan class="msg-sub">QoS 1 · 0x1A4A</tspan></text>
+        <line x1="250" y1="80" x2="548" y2="80" class="s-up" stroke-width="2"/>
+        <circle cx="250" cy="80" r="3.5" class="f-up"/>
+        <path d="M550 72l16 16M566 72l-16 16" class="s-lost" stroke-width="2.5" stroke-linecap="round"/>
+        <text x="578" y="84" class="lost-text">유실</text>
+
+        <!-- 타임아웃 구간 (노드 측) -->
+        <path d="M236 80H226V358.9H236" fill="none" class="s-th" stroke-width="1.5"/>
+        <text x="218" y="214" text-anchor="end" class="th-text">PUBACK 대기</text>
+        <text x="218" y="230" text-anchor="end" class="th-text">→ 타임아웃</text>
+        <line x1="250" y1="358.9" x2="900" y2="358.9" class="s-th" stroke-width="1.5" stroke-dasharray="2 3"/>
+
+        <!-- 재전송 + PUBACK -->
+        <text x="470" y="350.9" text-anchor="middle" class="msg-up">PUBLISH · DUP <tspan class="msg-sub">retry 1 · t 22.1 ms</tspan></text>
+        <line x1="250" y1="358.9" x2="690" y2="358.9" class="s-up" stroke-width="2" marker-end="url(#ah-up)"/>
+        <circle cx="250" cy="358.9" r="3.5" class="f-up"/>
+
+        <text x="470" y="472" text-anchor="middle" class="msg-down">PUBACK <tspan class="msg-sub">t 31.7 ms</tspan></text>
+        <line x1="690" y1="480" x2="250" y2="480" class="s-down" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-down)"/>
+        <circle cx="690" cy="480" r="3.5" class="f-down"/>
+
+        <!-- RTT 브래킷: 전체 + PUBACK 소요 -->
+        <path d="M770 80H784V480H770" fill="none" class="s-baseline" stroke-width="1.5"/>
+        <text x="796" y="212" class="rtt">RTT 31.7 ms</text>
+        <text x="796" y="230" class="rtt-sub">최초 PUBLISH → PUBACK</text>
+        <path d="M800 358.9H808V480H800" fill="none" class="s-down" stroke-width="1.5"/>
+        <text x="818" y="424" class="rtt-sub">PUBACK 9.6 ms</text>
+      </svg>
+      <aside class="panel-side">
+        <p class="side-title">이벤트 · <span class="mono">0x1A4A</span> <span class="qos-chip qos-chip--1">QoS 1</span></p>
+        <table class="ev">
+          <thead><tr><th>t (ms)</th><th>메시지</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">0.0</td><td><span class="dir dir--lost">PUBLISH · 유실</span></td></tr>
+            <tr><td class="mono">22.1</td><td><span class="dir dir--up">PUBLISH · DUP</span></td></tr>
+            <tr><td class="mono">31.7</td><td><span class="dir dir--down">PUBACK</span></td></tr>
+          </tbody>
+        </table>
+        <p class="note"><strong>타임아웃 → 재전송 · retry 1.</strong> 결과 전달 · RTT 31.7 ms. 재전송 시점 22.1 ms는 31.7 − 9.6(QoS 1 PUBACK 소요)으로 역산.</p>
+      </aside>
+    </div>
+
+    <!-- 탭 3: 패킷 유실 (retry 3 후 포기) — 시간 비례 아님 -->
+    <div class="panel" role="tabpanel" id="p-lost" aria-labelledby="tab-lost" hidden>
+      <svg class="seq" viewBox="0 0 960 520" role="img" aria-label="QoS 1 패킷 유실: PUBLISH 원본과 재전송 3회 모두 유실, 응답 없음, 17:49:58 포기">
+        <text x="64" y="58" text-anchor="end" class="axis-title">시도</text>
+        <line x1="72" y1="90" x2="72" y2="460" class="s-axis" stroke-width="1" stroke-dasharray="2 4"/>
+        <text x="60" y="104" text-anchor="end" class="tick-strong">원본</text>
+        <text x="60" y="194" text-anchor="end" class="tick">1/3</text>
+        <text x="60" y="284" text-anchor="end" class="tick">2/3</text>
+        <text x="60" y="374" text-anchor="end" class="tick">3/3</text>
+        <text x="60" y="464" text-anchor="end" class="tick-strong">포기</text>
+
+        <rect x="170" y="14" width="160" height="44" rx="6" class="actor"/>
+        <text x="250" y="34" text-anchor="middle" class="actor-text">Node 1</text>
+        <text x="250" y="49" text-anchor="middle" class="actor-sub">ESP32-S3 · 192.168.0.42</text>
+        <rect x="610" y="14" width="160" height="44" rx="6" class="actor"/>
+        <text x="690" y="34" text-anchor="middle" class="actor-text">Gateway</text>
+        <text x="690" y="49" text-anchor="middle" class="actor-sub">Raspberry Pi · UDP :5000</text>
+        <line x1="250" y1="58" x2="250" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <line x1="690" y1="58" x2="690" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+        <g>
+          <text x="400" y="92" text-anchor="middle" class="msg-up">PUBLISH <tspan class="msg-sub">QoS 1 · 0x1A48</tspan></text>
+          <line x1="250" y1="100" x2="548" y2="100" class="s-up" stroke-width="2"/>
+          <circle cx="250" cy="100" r="3.5" class="f-up"/>
+          <path d="M550 92l16 16M566 92l-16 16" class="s-lost" stroke-width="2.5" stroke-linecap="round"/>
+          <text x="578" y="104" class="lost-text">유실</text>
+          <line x1="250" y1="145" x2="900" y2="145" class="s-th" stroke-width="1.5" stroke-dasharray="2 3"/>
+          <text x="900" y="139" text-anchor="end" class="th-text">타임아웃</text>
+        </g>
+        <g>
+          <text x="400" y="182" text-anchor="middle" class="msg-up">PUBLISH · DUP <tspan class="msg-sub">retry 1</tspan></text>
+          <line x1="250" y1="190" x2="548" y2="190" class="s-up" stroke-width="2"/>
+          <circle cx="250" cy="190" r="3.5" class="f-up"/>
+          <path d="M550 182l16 16M566 182l-16 16" class="s-lost" stroke-width="2.5" stroke-linecap="round"/>
+          <text x="578" y="194" class="lost-text">유실</text>
+          <line x1="250" y1="235" x2="900" y2="235" class="s-th" stroke-width="1.5" stroke-dasharray="2 3"/>
+          <text x="900" y="229" text-anchor="end" class="th-text">타임아웃</text>
+        </g>
+        <g>
+          <text x="400" y="272" text-anchor="middle" class="msg-up">PUBLISH · DUP <tspan class="msg-sub">retry 2</tspan></text>
+          <line x1="250" y1="280" x2="548" y2="280" class="s-up" stroke-width="2"/>
+          <circle cx="250" cy="280" r="3.5" class="f-up"/>
+          <path d="M550 272l16 16M566 272l-16 16" class="s-lost" stroke-width="2.5" stroke-linecap="round"/>
+          <text x="578" y="284" class="lost-text">유실</text>
+          <line x1="250" y1="325" x2="900" y2="325" class="s-th" stroke-width="1.5" stroke-dasharray="2 3"/>
+          <text x="900" y="319" text-anchor="end" class="th-text">타임아웃</text>
+        </g>
+        <g>
+          <text x="400" y="362" text-anchor="middle" class="msg-up">PUBLISH · DUP <tspan class="msg-sub">retry 3</tspan></text>
+          <line x1="250" y1="370" x2="548" y2="370" class="s-up" stroke-width="2"/>
+          <circle cx="250" cy="370" r="3.5" class="f-up"/>
+          <path d="M550 362l16 16M566 362l-16 16" class="s-lost" stroke-width="2.5" stroke-linecap="round"/>
+          <text x="578" y="374" class="lost-text">유실</text>
+          <line x1="250" y1="415" x2="900" y2="415" class="s-th" stroke-width="1.5" stroke-dasharray="2 3"/>
+          <text x="900" y="409" text-anchor="end" class="th-text">타임아웃</text>
+        </g>
+        <rect x="160" y="442" width="180" height="32" rx="6" fill="none" class="s-lost" stroke-width="1.5"/>
+        <text x="250" y="463" text-anchor="middle" class="lost-text">TIMEOUT · 17:49:58 · 포기</text>
+
+        <path d="M770 100H784V460H770" fill="none" class="s-lost" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="796" y="272" class="rtt">RTT —</text>
+        <text x="796" y="290" class="rtt-sub">응답 없음 · 측정 불가</text>
+      </svg>
+      <aside class="panel-side">
+        <p class="side-title">이벤트 · <span class="mono">0x1A48</span> <span class="qos-chip qos-chip--1">QoS 1</span></p>
+        <table class="ev">
+          <thead><tr><th>시도</th><th>메시지</th></tr></thead>
+          <tbody>
+            <tr><td>원본</td><td><span class="dir dir--lost">PUBLISH · 유실</span></td></tr>
+            <tr><td>retry 1</td><td><span class="dir dir--lost">PUBLISH · 유실</span></td></tr>
+            <tr><td>retry 2</td><td><span class="dir dir--lost">PUBLISH · 유실</span></td></tr>
+            <tr><td>retry 3</td><td><span class="dir dir--lost">PUBLISH · 유실</span></td></tr>
+          </tbody>
+        </table>
+        <p class="note"><strong>retry 3회 후 포기.</strong> 17:49:58 · 네트워크 불안정 · 결과 유실 · RTT 없음(—). 고정 데이터에 시도별 시각이 없어 이 탭만 시간축을 비례로 그리지 않음. 이 유실 뒤 17:50:05에 QoS 1 → 2 상향.</p>
+      </aside>
+    </div>
+
+    <!-- 탭 4: QoS 0·1·2 전환 — 공통 시간축 y = 80 + t × 400/18.4 -->
+    <div class="panel" role="tabpanel" id="p-switch" aria-labelledby="tab-switch" hidden>
+      <svg class="seq" viewBox="0 0 960 520" role="img" aria-label="QoS 0·1·2 비교: QoS 0 PUBLISH만 RTT 4.2 ms, QoS 1 PUBLISH·PUBACK RTT 9.6 ms, QoS 2 4단계 RTT 18.4 ms">
+        <text x="64" y="58" text-anchor="end" class="axis-title">t (ms)</text>
+        <line x1="72" y1="80" x2="72" y2="480" class="s-axis" stroke-width="1"/>
+        <g class="s-grid" stroke-width="1">
+          <line x1="72" y1="167" x2="940" y2="167"/><line x1="72" y1="253.9" x2="940" y2="253.9"/>
+          <line x1="72" y1="340.9" x2="940" y2="340.9"/><line x1="72" y1="427.8" x2="940" y2="427.8"/>
+        </g>
+        <g class="s-axis" stroke-width="1">
+          <line x1="66" y1="80" x2="72" y2="80"/><line x1="66" y1="167" x2="72" y2="167"/><line x1="66" y1="253.9" x2="72" y2="253.9"/>
+          <line x1="66" y1="340.9" x2="72" y2="340.9"/><line x1="66" y1="427.8" x2="72" y2="427.8"/><line x1="62" y1="480" x2="72" y2="480"/>
+        </g>
+        <text x="60" y="84" text-anchor="end" class="tick-strong">0.0</text>
+        <text x="60" y="171" text-anchor="end" class="tick">4</text>
+        <text x="60" y="257.9" text-anchor="end" class="tick">8</text>
+        <text x="60" y="344.9" text-anchor="end" class="tick">12</text>
+        <text x="60" y="431.8" text-anchor="end" class="tick">16</text>
+        <text x="56" y="492" text-anchor="end" class="tick-strong">18.4</text>
+
+        <!-- QoS 0 열 -->
+        <rect x="104" y="14" width="56" height="22" rx="4" class="f-q0"/>
+        <text x="132" y="29" text-anchor="middle" class="seg-text t-q0">QoS 0</text>
+        <text x="168" y="29" class="actor-sub">0x1A49 · UDP</text>
+        <text x="120" y="54" text-anchor="middle" class="actor-sub">Node</text>
+        <text x="300" y="54" text-anchor="middle" class="actor-sub">GW</text>
+        <line x1="120" y1="60" x2="120" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <line x1="300" y1="60" x2="300" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <text x="210" y="72" text-anchor="middle" class="msg-up">PUBLISH</text>
+        <line x1="120" y1="80" x2="300" y2="80" class="s-up" stroke-width="2" marker-end="url(#ah-up)"/>
+        <circle cx="120" cy="80" r="3.5" class="f-up"/>
+        <text x="210" y="104" text-anchor="middle" class="msg-sub">ACK 없음</text>
+        <path d="M312 80H322V171.3H312" fill="none" class="s-baseline" stroke-width="1.5"/>
+        <text x="314" y="190" class="rtt">4.2 ms</text>
+
+        <!-- QoS 1 열 -->
+        <rect x="384" y="14" width="56" height="22" rx="4" class="f-q1"/>
+        <text x="412" y="29" text-anchor="middle" class="seg-text t-q1">QoS 1</text>
+        <text x="448" y="29" class="actor-sub">0x1A4A · UDP</text>
+        <text x="400" y="54" text-anchor="middle" class="actor-sub">Node</text>
+        <text x="580" y="54" text-anchor="middle" class="actor-sub">GW</text>
+        <line x1="400" y1="60" x2="400" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <line x1="580" y1="60" x2="580" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <text x="490" y="72" text-anchor="middle" class="msg-up">PUBLISH</text>
+        <line x1="400" y1="80" x2="580" y2="80" class="s-up" stroke-width="2" marker-end="url(#ah-up)"/>
+        <circle cx="400" cy="80" r="3.5" class="f-up"/>
+        <text x="490" y="280.7" text-anchor="middle" class="msg-down">PUBACK</text>
+        <line x1="580" y1="288.7" x2="400" y2="288.7" class="s-down" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-down)"/>
+        <circle cx="580" cy="288.7" r="3.5" class="f-down"/>
+        <path d="M592 80H602V288.7H592" fill="none" class="s-baseline" stroke-width="1.5"/>
+        <text x="594" y="308" class="rtt">9.6 ms</text>
+
+        <!-- QoS 2 열 -->
+        <rect x="664" y="14" width="56" height="22" rx="4" class="f-q2"/>
+        <text x="692" y="29" text-anchor="middle" class="seg-text t-q2">QoS 2</text>
+        <text x="728" y="29" class="actor-sub">0x1A4B · TCP</text>
+        <text x="680" y="54" text-anchor="middle" class="actor-sub">Node</text>
+        <text x="860" y="54" text-anchor="middle" class="actor-sub">GW</text>
+        <line x1="680" y1="60" x2="680" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <line x1="860" y1="60" x2="860" y2="500" class="s-life" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <text x="770" y="72" text-anchor="middle" class="msg-up">PUBLISH</text>
+        <line x1="680" y1="80" x2="860" y2="80" class="s-up" stroke-width="2" marker-end="url(#ah-up)"/>
+        <circle cx="680" cy="80" r="3.5" class="f-up"/>
+        <text x="770" y="198.1" text-anchor="middle" class="msg-down">PUBREC</text>
+        <line x1="860" y1="206.1" x2="680" y2="206.1" class="s-down" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-down)"/>
+        <circle cx="860" cy="206.1" r="3.5" class="f-down"/>
+        <text x="770" y="315.5" text-anchor="middle" class="msg-up">PUBREL</text>
+        <line x1="680" y1="323.5" x2="860" y2="323.5" class="s-up" stroke-width="2" marker-end="url(#ah-up)"/>
+        <circle cx="680" cy="323.5" r="3.5" class="f-up"/>
+        <text x="770" y="472" text-anchor="middle" class="msg-down">PUBCOMP</text>
+        <line x1="860" y1="480" x2="680" y2="480" class="s-down" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#ah-down)"/>
+        <circle cx="860" cy="480" r="3.5" class="f-down"/>
+        <path d="M872 80H882V480H872" fill="none" class="s-baseline" stroke-width="1.5"/>
+        <text x="886" y="276" class="rtt">18.4</text>
+        <text x="886" y="292" class="rtt-sub">ms</text>
+      </svg>
+      <aside class="panel-side">
+        <p class="side-title">전환 · <span class="qos-chip qos-chip--1">1</span> → <span class="qos-chip qos-chip--2">2</span></p>
+        <table class="ev">
+          <thead><tr><th>QoS</th><th>메시지 · RTT</th></tr></thead>
+          <tbody>
+            <tr><td><span class="qos-chip qos-chip--0">0</span></td><td>PUBLISH · <span class="mono">4.2 ms</span></td></tr>
+            <tr><td><span class="qos-chip qos-chip--1">1</span></td><td>PUBLISH → PUBACK · <span class="mono">9.6 ms</span></td></tr>
+            <tr><td><span class="qos-chip qos-chip--2">2</span></td><td>4단계 · <span class="mono">18.4 ms</span></td></tr>
+          </tbody>
+        </table>
+        <p class="note"><strong>17:50:05 QoS 1 → 2.</strong> 위험 점수 0.512는 0.40–0.75 구간(QoS 1)이지만 네트워크 불안정으로 한 단계 상향. 분포 QoS 0 70% · QoS 1 20% · QoS 2 10%.</p>
+      </aside>
+    </div>
+
+    <footer class="card__foot">
+      시간축은 메시지 시각(<span class="mono">tMs</span>) 기준 실제 비례 · 오른쪽 브래킷 = RTT · 상행은 실선 파랑, 하행은 점선 회색
+    </footer>
+  </section>
+
+  <!-- ================= c. 토큰 시트 ================= -->
+  <div class="section-head">
+    <h2>색 · 타이포 토큰</h2>
+    <p>01 운영 대시보드와 이 문서가 함께 쓰는 :root 변수 전체</p>
+  </div>
+
+  <div class="grid tok-grid">
+    <section class="card tok-group" aria-label="시리즈 색과 QoS 램프">
+      <h3>시리즈 · QoS 램프</h3>
+      <ul class="tok-list">
+        <li class="tok"><span class="tok__sw" style="background:var(--series-gingerbread)"></span><span><span class="tok__name">--series-gingerbread</span><br><span class="tok__meta">#2A78D6 · Gingerbread 고정</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--series-legacy)"></span><span><span class="tok__name">--series-legacy</span><br><span class="tok__meta">#EB6834 · Legacy MQTT 고정</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--qos-0);color:var(--qos-0-ink)">0</span><span><span class="tok__name">--qos-0 / -ink</span><br><span class="tok__meta">#86B6EF · 글자 #0B0B0B</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--qos-1);color:var(--qos-1-ink)">1</span><span><span class="tok__name">--qos-1 / -ink</span><br><span class="tok__meta">#3987E5 · 글자 #FFFFFF</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--qos-2);color:var(--qos-2-ink)">2</span><span><span class="tok__name">--qos-2 / -ink</span><br><span class="tok__meta">#184F95 · 글자 #FFFFFF</span></span></li>
+      </ul>
+    </section>
+
+    <section class="card tok-group" aria-label="상태 색">
+      <h3>상태 <small style="color:var(--ink-muted);font-weight:400">· 아이콘 + 라벨과 함께</small></h3>
+      <ul class="tok-list">
+        <li class="tok"><span class="tok__sw" style="background:var(--status-normal)"></span><span><span class="tok__name">--status-normal</span><br><span class="tok__meta">#0CA30C · 연결·정상 점</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card);color:var(--status-serious-ink)">▲</span><span><span class="tok__name">--status-serious-ink</span><br><span class="tok__meta">#C2653A · 불안정</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card);color:var(--status-critical-ink)">✕</span><span><span class="tok__name">--status-critical-ink</span><br><span class="tok__meta">#A8332A · 긴급·유실</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-subtle);color:var(--status-positive-ink)">▲</span><span><span class="tok__name">--status-positive-ink</span><br><span class="tok__meta">#006300 · 개선 증감</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card)"><svg width="20" height="20" aria-hidden="true"><line x1="10" y1="2" x2="10" y2="18" class="s-th" stroke-width="2"/></svg></span><span><span class="tok__name">--line-threshold</span><br><span class="tok__meta">#0B0B0B · 임계선 검정</span></span></li>
+      </ul>
+    </section>
+
+    <section class="card tok-group" aria-label="표면 색">
+      <h3>표면</h3>
+      <ul class="tok-list">
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-page)"></span><span><span class="tok__name">--surface-page</span><br><span class="tok__meta">#EFEFEC · 페이지 배경</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card)"></span><span><span class="tok__name">--surface-card</span><br><span class="tok__meta">#FCFCFB · 카드</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-track)"></span><span><span class="tok__name">--surface-track</span><br><span class="tok__meta">#ECEAE4 · 게이지 트랙</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-subtle)"></span><span><span class="tok__name">--surface-subtle</span><br><span class="tok__meta">#F2F1ED · 막대 배경·칩</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-selected)"></span><span><span class="tok__name">--surface-selected</span><br><span class="tok__meta">#ECEAE4 · 선택된 nav·탭</span></span></li>
+      </ul>
+    </section>
+
+    <section class="card tok-group" aria-label="잉크와 선">
+      <h3>잉크 · 선</h3>
+      <ul class="tok-list">
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card);color:var(--ink-primary)">가</span><span><span class="tok__name">--ink-primary</span> <span class="tok__meta">#0B0B0B</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card);color:var(--ink-secondary)">가</span><span><span class="tok__name">--ink-secondary</span> <span class="tok__meta">#52514E</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card);color:var(--ink-muted)">가</span><span><span class="tok__name">--ink-muted</span> <span class="tok__meta">#898781</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card);color:var(--ink-faint)">가</span><span><span class="tok__name">--ink-faint</span> <span class="tok__meta">#A9A79F</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--ink-primary);color:var(--ink-inverse)">가</span><span><span class="tok__name">--ink-inverse</span> <span class="tok__meta">#FFFFFF</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card)"><svg width="24" height="20" aria-hidden="true"><line x1="0" y1="7" x2="24" y2="7" class="s-grid" stroke-width="2"/><line x1="0" y1="14" x2="24" y2="14" style="stroke:var(--line-axis)" stroke-width="2"/></svg></span><span><span class="tok__name">--line-grid / -axis</span> <span class="tok__meta">#E1E0D9 · #C3C2B7</span></span></li>
+        <li class="tok"><span class="tok__sw" style="background:var(--surface-card);border:2px solid var(--line-control)"></span><span><span class="tok__name">--line-card / -control</span> <span class="tok__meta">rgba(11,11,11,.10 · .14)</span></span></li>
+      </ul>
+    </section>
+  </div>
+
+  <section class="card" aria-label="타이포 스케일">
+    <header class="card__head">
+      <h2 class="card__title">타이포 스케일 <small>· 웹폰트 미로딩, 시스템 글꼴 대체</small></h2>
+      <span class="card__meta"><span class="mono">--font-sans</span> IBM Plex Sans KR → Malgun Gothic · <span class="mono">--font-mono</span> IBM Plex Mono → Consolas</span>
+    </header>
+    <div class="type-list">
+      <div class="type-row"><span class="tok__name">--text-metric</span><span style="font:var(--text-metric);letter-spacing:-0.02em">98.5<span style="font:500 15px/1 var(--font-sans);color:var(--ink-secondary)">%</span></span><span class="spec-txt">600 · 38px / 1</span></div>
+      <div class="type-row"><span class="tok__name">--text-title</span><span style="font:var(--text-title)">베이스라인 비교 · Gingerbread vs Legacy MQTT</span><span class="spec-txt">600 · 16px / 1.3</span></div>
+      <div class="type-row"><span class="tok__name">--text-body-strong</span><span style="font:var(--text-body-strong)">전송 성공률 · 누적 소비 전력</span><span class="spec-txt">500 · 13px / 1.5</span></div>
+      <div class="type-row"><span class="tok__name">--text-body</span><span style="font:var(--text-body)">동일한 20% 손실 주입 환경에서 Gingerbread는 98.5%를 기록했습니다.</span><span class="spec-txt">400 · 12.5px / 1.55</span></div>
+      <div class="type-row"><span class="tok__name">--text-label</span><span style="font:var(--text-label);letter-spacing:var(--letter-label);color:var(--ink-muted)">RSSI · 전송 성공률</span><span class="spec-txt">600 · 11px / 1.2 · 자간 0.08em</span></div>
+      <div class="type-row"><span class="tok__name">--text-caption</span><span style="font:var(--text-caption);color:var(--ink-muted)">손실 20% 주입 · n = 1,200 · 60분 구간</span><span class="spec-txt">400 · 11.5px / 1.4</span></div>
+      <div class="type-row"><span class="tok__name">--font-mono</span><span class="mono" style="font-size:13px">0x1A4B · 192.168.0.42 · 18.4 ms</span><span class="spec-txt">tabular-nums</span></div>
+    </div>
+    <footer class="card__foot">
+      <div class="shape-row">
+        <span class="shape"><span class="shape__box" style="border-radius:var(--radius-card)"></span><span class="tok__meta"><span class="mono">--radius-card</span> 10px</span></span>
+        <span class="shape"><span class="shape__box" style="border-radius:var(--radius-control)"></span><span class="tok__meta"><span class="mono">--radius-control</span> 6px</span></span>
+        <span class="shape"><span class="shape__box" style="border-radius:var(--radius-chip)"></span><span class="tok__meta"><span class="mono">--radius-chip</span> 4px</span></span>
+        <span class="shape"><span class="shape__box" style="width:var(--gap-grid);border-radius:0"></span><span class="tok__meta"><span class="mono">--gap-grid</span> 16px</span></span>
+        <span class="shape"><span class="tok__meta" style="padding-top:12px"><span class="mono">--page-max</span> 1440px · 1200 / 1024 / 720 이하 대응</span></span>
+      </div>
+    </footer>
+  </section>
+
+  <footer class="page-foot">
+    <span>결과보고서용 정적 목업 2/2 · 실험 비교·프로토콜</span>
+    <span>수치 출처 <span class="mono">dashboard/src/data/mock/fixtures.ts</span> (experimentSummary · handshakeFlows · packetLog · protocolSnapshot)</span>
+    <span>노드 역할·수신 경로 서술 <span class="mono">README.md</span></span>
+    <span>성공률 98.5% ↔ 패킷 손실 1.5% (100 − 1.5) · Legacy 72.0% ↔ 28.0%</span>
+  </footer>
+</main>
+
+<script>
+  /* 탭 전환만 담당 — fetch·타이머·폴링 없음 */
+  (function () {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+    function select(tab) {
+      tabs.forEach(function (t) {
+        var on = t === tab;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+        document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+      });
+    }
+    tabs.forEach(function (t, i) {
+      t.addEventListener('click', function () { select(t); });
+      t.addEventListener('keydown', function (e) {
+        var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!d) return;
+        var n = tabs[(i + d + tabs.length) % tabs.length];
+        select(n); n.focus(); e.preventDefault();
+      });
+    });
+  })();
+</script>
+</body>
+</html>
